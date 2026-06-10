@@ -2,20 +2,18 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from pathlib import Path
 
 import streamlit as st
 
 from agent_hub.agents.daily_briefing.logic import get_briefing_status
 from agent_hub.agents.priorities.logic import (
-    load_priorities_yaml,
+    parse_priorities_yaml,
     save_priorities_yaml,
     write_priorities_slice,
 )
 from agent_hub.core.config import load_config
-from agent_hub.core.paths import latest_briefing_path, priorities_file
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from agent_hub.core.paths import PROJECT_ROOT, latest_briefing_path, priorities_file
+from agent_hub.core.render import status_emoji
 CLI_TIMEOUT_SECONDS = 120
 
 
@@ -32,15 +30,6 @@ def _run_cli(command: list[str]) -> subprocess.CompletedProcess[str]:
 
 def _python_command(*args: str) -> list[str]:
     return [sys.executable, "-m", *args]
-
-
-def _status_emoji(status: str) -> str:
-    return {
-        "ok": "✅",
-        "stale": "⚠️",
-        "error": "❌",
-        "missing": "⬜",
-    }.get(status, "⬜")
 
 
 def render() -> None:
@@ -69,7 +58,7 @@ def render() -> None:
     for column, slice_status in zip(chip_cols, status.slices):
         with column:
             st.markdown(
-                f"{_status_emoji(slice_status['status'])} **{slice_status['title']}** — "
+                f"{status_emoji(slice_status['status'])} **{slice_status['title']}** — "
                 f"`{slice_status['status']}`"
             )
             if slice_status["message"]:
@@ -91,12 +80,12 @@ def render() -> None:
         current_yaml = priorities_path.read_text(encoding="utf-8")
         edited_yaml = st.text_area("priorities.yaml", value=current_yaml, height=220)
         if st.button("Save priorities and update slice"):
-            save_priorities_yaml(config.data_dir, edited_yaml)
             try:
-                load_priorities_yaml(config.data_dir)
+                parse_priorities_yaml(edited_yaml)
             except Exception as exc:
                 st.error(f"Invalid YAML: {exc}")
             else:
+                save_priorities_yaml(config.data_dir, edited_yaml)
                 write_priorities_slice(config)
                 st.success("Priorities slice updated.")
                 st.rerun()

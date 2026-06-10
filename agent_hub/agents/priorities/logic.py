@@ -28,10 +28,18 @@ def ensure_priorities_file(data_dir: Path) -> Path:
     return path
 
 
+def parse_priorities_yaml(content: str) -> dict:
+    data = yaml.safe_load(content)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError("priorities.yaml must be a mapping at the top level")
+    return data
+
+
 def load_priorities_yaml(data_dir: Path) -> dict:
     path = ensure_priorities_file(data_dir)
-    with path.open(encoding="utf-8") as handle:
-        return yaml.safe_load(handle) or {}
+    return parse_priorities_yaml(path.read_text(encoding="utf-8"))
 
 
 def save_priorities_yaml(data_dir: Path, content: str) -> Path:

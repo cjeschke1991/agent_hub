@@ -37,8 +37,18 @@ def _pid_alive(pid: int) -> bool:
 
 
 @contextmanager
-def briefing_lock(lockfile: Path, wait_seconds: float = 10.0) -> Iterator[None]:
+def briefing_lock(
+    lockfile: Path,
+    wait_seconds: float = 10.0,
+    *,
+    force: bool = False,
+) -> Iterator[None]:
     lockfile.parent.mkdir(parents=True, exist_ok=True)
+    if force:
+        info = _read_lock(lockfile)
+        if info and not _pid_alive(info.pid):
+            lockfile.unlink(missing_ok=True)
+        wait_seconds = 0.0
     deadline = time.time() + wait_seconds
 
     while True:

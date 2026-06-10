@@ -32,10 +32,6 @@ def slice_path(data_dir: Path, agent_id: str) -> Path:
     return slices_dir(data_dir) / agent_id / "latest.json"
 
 
-def slice_body_path(data_dir: Path, agent_id: str) -> Path:
-    return slices_dir(data_dir) / agent_id / "body.md"
-
-
 def latest_briefing_path(data_dir: Path) -> Path:
     return briefings_dir(data_dir) / "latest.md"
 

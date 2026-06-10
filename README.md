@@ -4,7 +4,7 @@ Local-first Streamlit shell for dashboards and agent control. v1 ships the **Dai
 
 ## Quick start
 
-Requires **Python 3.11+** (3.10+ union types). If system `python3` is older, point venv at a newer interpreter:
+Requires **Python 3.11+**. If system `python3` is older, point venv at a newer interpreter:
 
 ```bash
 cd /Users/clayjeschke/cursor_projects/agent_hub
@@ -42,6 +42,23 @@ gmail-stub write-slice
 briefing assemble
 briefing status
 briefing open
+pinball init-db
+pinball export-status
+```
+
+## Pinball Tracker
+
+The **Pinball Tracker** tab includes four sub-tabs:
+
+- **Machines** — profiles with ruleset, description, OPDB-ready fields
+- **Repairs & Maintenance** — issue and scheduled logbook per machine
+- **Mods** — project-style mod tracking (cost, parts, install notes)
+- **Skills** — global pinball skills with tags
+
+Data is stored in `data/pinball/pinball.db`. Seed your collection:
+
+```bash
+pinball seed-collection
 ```
 
 ## Architecture
@@ -88,4 +105,3 @@ pytest
 ## Next tabs
 
 Each future tab adds an agent under `agent_hub/agents/<name>/` with `write-slice` (if it feeds the briefing) plus a Streamlit dashboard module.
-# agent_hub

@@ -22,6 +22,7 @@ agent_hub = "agent_hub.launcher:main"
 priorities = "agent_hub.agents.priorities.cli:app"
 gmail-stub = "agent_hub.agents.gmail_stub.cli:app"
 briefing = "agent_hub.agents.daily_briefing.cli:app"
+pinball = "agent_hub.agents.pinball_tracker.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["."]

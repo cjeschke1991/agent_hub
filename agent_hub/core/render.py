@@ -43,7 +43,7 @@ def effective_status(slice_data: Slice | None, stale_hours: float) -> tuple[str,
     return "ok", ""
 
 
-def _status_emoji(status: str) -> str:
+def status_emoji(status: str) -> str:
     return {
         "ok": "✅",
         "stale": "⚠️",
@@ -83,7 +83,7 @@ def render_briefing(
         if status in {"error", "stale", "missing"}:
             has_issue = True
 
-        lines.append(f"## {_status_emoji(status)} {slice_data.title if slice_data else agent_id}")
+        lines.append(f"## {status_emoji(status)} {slice_data.title if slice_data else agent_id}")
         lines.append("")
 
         if slice_data is None:

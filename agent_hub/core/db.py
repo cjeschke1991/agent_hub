@@ -3,21 +3,10 @@ from __future__ import annotations
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-@dataclass
-class SliceRun:
-    agent_id: str
-    finished_at: str
-    status: str
-    message: str
+from agent_hub.core.slices import utc_now_iso
 
 
 @dataclass
@@ -75,24 +64,8 @@ class Database:
                 INSERT INTO slice_runs (agent_id, finished_at, status, message)
                 VALUES (?, ?, ?, ?)
                 """,
-                (agent_id, _utc_now(), status, message),
+                (agent_id, utc_now_iso(), status, message),
             )
-
-    def latest_slice_run(self, agent_id: str) -> SliceRun | None:
-        with self.connect() as conn:
-            row = conn.execute(
-                """
-                SELECT agent_id, finished_at, status, message
-                FROM slice_runs
-                WHERE agent_id = ?
-                ORDER BY id DESC
-                LIMIT 1
-                """,
-                (agent_id,),
-            ).fetchone()
-        if row is None:
-            return None
-        return SliceRun(**dict(row))
 
     def upsert_briefing(
         self,
@@ -101,7 +74,7 @@ class Database:
         slice_count: int,
         status: str,
     ) -> None:
-        assembled_at = _utc_now()
+        assembled_at = utc_now_iso()
         with self.connect() as conn:
             conn.execute(
                 """

@@ -15,9 +15,8 @@ app = typer.Typer(help="Assemble and inspect the daily briefing.")
 
 @app.command("assemble")
 def assemble_cmd(force: bool = typer.Option(False, "--force", help="Force a new assemble run.")) -> None:
-    del force
     try:
-        result = assemble_briefing()
+        result = assemble_briefing(force=force)
         typer.echo(f"Briefing assembled: {result.path} ({result.overall_status})")
     except BriefingLockError as exc:
         typer.echo(str(exc), err=True)

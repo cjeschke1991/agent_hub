@@ -10,7 +10,7 @@ from agent_hub.core.db import Database
 from agent_hub.core.lock import BriefingLockError, briefing_lock
 from agent_hub.core.logging import get_logger
 from agent_hub.core.paths import dated_briefing_path, latest_briefing_path, lock_path
-from agent_hub.core.render import BriefingRenderResult, effective_status, render_briefing
+from agent_hub.core.render import RenderedSlice, effective_status, render_briefing
 from agent_hub.core.slices import Slice, read_slice
 
 AGENT_ID = "daily_briefing"
@@ -22,7 +22,7 @@ class AssembleResult:
     path: Path
     latest_path: Path
     overall_status: str
-    rendered_slices: list
+    rendered_slices: list[RenderedSlice]
 
 
 @dataclass
@@ -50,7 +50,7 @@ def assemble_briefing(config: HubConfig | None = None, force: bool = False) -> A
 
     lockfile = lock_path(data_dir)
     try:
-        with briefing_lock(lockfile):
+        with briefing_lock(lockfile, force=force):
             slices = load_slices_for_order(config)
             assembled_at = datetime.now(timezone.utc).isoformat()
             rendered = render_briefing(config, slices, assembled_at=assembled_at)
