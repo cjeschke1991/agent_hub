@@ -1,0 +1,13 @@
+data_dir: data
+
+slice_order:
+  - priorities
+  - gmail_stub
+
+stale_hours:
+  default: 36
+  priorities: 48
+  gmail_stub: 24
+
+briefing:
+  title: "Daily Briefing"
