@@ -16,6 +16,10 @@ briefing:
 tmdb:
   api_key: ""
 
+# Optional: Rotten Tomatoes scores via OMDb (set OMDB_API_KEY in your environment).
+omdb:
+  api_key: ""
+
 movie_recommender:
   weights:
     genre: 0.35

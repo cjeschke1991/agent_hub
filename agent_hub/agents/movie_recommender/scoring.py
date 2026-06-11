@@ -101,14 +101,15 @@ def year_score(
 
 
 def rating_score(candidate: MovieDetails, liked: list[MovieDetails]) -> float:
-    if candidate.rating is None:
+    candidate_rating = candidate.scoring_rating()
+    if candidate_rating is None:
         return 0.0
-    liked_ratings = [movie.rating for movie in liked if movie.rating is not None]
+    liked_ratings = [movie.scoring_rating() for movie in liked if movie.scoring_rating() is not None]
     if not liked_ratings:
-        return min(100.0, candidate.rating * 10)
+        return min(100.0, candidate_rating)
     avg_rating = _avg(liked_ratings)
-    distance = abs(candidate.rating - avg_rating)
-    return max(0.0, 100.0 - distance * 15.0)
+    distance = abs(candidate_rating - avg_rating)
+    return max(0.0, 100.0 - distance * 1.5)
 
 
 def keyword_score(candidate: MovieDetails, liked: list[MovieDetails]) -> float:

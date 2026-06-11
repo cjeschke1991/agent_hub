@@ -4,8 +4,14 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
+from agent_hub.agents.movie_recommender.omdb import (
+    fetch_omdb_details,
+    parse_imdb_rating,
+    parse_metacritic_score,
+    parse_percent_score,
+)
 from agent_hub.core.config import HubConfig, load_config
 
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
@@ -49,6 +55,37 @@ class MovieDetails:
     runtime: int | None
     poster_url: str | None
     overview: str
+    imdb_id: str | None = None
+    imdb_rating: str | None = None
+    rotten_tomatoes_score: str | None = None
+    metacritic_score: str | None = None
+
+    @property
+    def lead_actors(self) -> list[str]:
+        return self.cast[:3]
+
+    def scoring_rating(self) -> float | None:
+        """Prefer Rotten Tomatoes (0-100), then Metacritic, then IMDb/TMDB on a 0-100 scale."""
+        rt = parse_percent_score(self.rotten_tomatoes_score)
+        if rt is not None:
+            return rt
+        metacritic = parse_metacritic_score(self.metacritic_score)
+        if metacritic is not None:
+            return metacritic
+        imdb = parse_imdb_rating(self.imdb_rating)
+        if imdb is not None:
+            return imdb
+        if self.rating is not None:
+            return self.rating * 10.0
+        return None
+
+    def metadata_display(self) -> dict[str, str]:
+        return {
+            "Genre": ", ".join(self.genres) if self.genres else "—",
+            "Director": self.director or "—",
+            "Lead actors": ", ".join(self.lead_actors) if self.lead_actors else "—",
+            "Rotten Tomatoes": self.rotten_tomatoes_score or "Not available",
+        }
 
 
 def _api_key(config: HubConfig | None = None) -> str:
@@ -114,6 +151,9 @@ def _parse_movie_details(payload: dict) -> MovieDetails:
         if item.get("name")
     ]
     genres = [genre["name"] for genre in payload.get("genres", []) if genre.get("name")]
+    imdb_id = payload.get("imdb_id") or None
+    if imdb_id == "":
+        imdb_id = None
     return MovieDetails(
         tmdb_id=int(payload["id"]),
         title=str(payload.get("title") or payload.get("name") or "Unknown"),
@@ -126,6 +166,7 @@ def _parse_movie_details(payload: dict) -> MovieDetails:
         runtime=int(payload["runtime"]) if payload.get("runtime") else None,
         poster_url=_poster_url(payload.get("poster_path")),
         overview=str(payload.get("overview") or ""),
+        imdb_id=imdb_id,
     )
 
 
@@ -157,7 +198,16 @@ def get_movie_details(tmdb_id: int, config: HubConfig | None = None) -> MovieDet
         {"append_to_response": "credits,keywords"},
         config=config,
     )
-    return _parse_movie_details(payload)
+    details = _parse_movie_details(payload)
+    omdb = fetch_omdb_details(details.imdb_id, config=config)
+    if not omdb:
+        return details
+    return replace(
+        details,
+        rotten_tomatoes_score=omdb.rotten_tomatoes_score,
+        metacritic_score=omdb.metacritic_score,
+        imdb_rating=omdb.imdb_rating,
+    )
 
 
 def list_genres(config: HubConfig | None = None) -> list[Genre]:

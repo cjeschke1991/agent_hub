@@ -61,9 +61,18 @@ The **Movie Recommender** tab builds a taste profile from movies you like and di
 
 ```bash
 export TMDB_API_KEY="your-key-here"
+export OMDB_API_KEY="your-omdb-key"
 ```
 
+Or create a `.env` file in the project root (see `.env.example`) — Streamlit loads this automatically on startup.
+
 Or add to `config.yaml` under `tmdb.api_key` (do not commit real keys).
+
+**Rotten Tomatoes scores (optional):** TMDB does not provide RT ratings. Set a free [OMDb API key](https://www.omdbapi.com/apikey.aspx) to fetch them:
+
+```bash
+export OMDB_API_KEY="your-omdb-key"
+```
 
 Data is stored in `data/movies/movies.db`.
 

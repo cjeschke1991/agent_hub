@@ -1,6 +1,7 @@
 from agent_hub.agents.movie_recommender.logic import (
     RecommendFilters,
     add_movie,
+    is_kids_movie,
     list_disliked,
     list_liked,
     recommend,
@@ -91,3 +92,11 @@ def test_recommend_excludes_existing_taste_and_ranks(hub_config, monkeypatch):
     assert len(results) == 2
     assert {item.movie.tmdb_id for item in results} == {2, 3}
     assert results[0].score.total >= results[1].score.total
+    assert results[0].reason
+    assert results[0].reason.endswith(".")
+
+
+def test_kids_only_filters_non_family_animation(hub_config):
+    assert is_kids_movie(_details(1, "Toy Story", genres=["Animation", "Family"]))
+    assert not is_kids_movie(_details(2, "Die Hard", genres=["Action", "Thriller"]))
+

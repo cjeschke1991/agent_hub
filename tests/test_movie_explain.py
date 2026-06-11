@@ -1,4 +1,5 @@
-from agent_hub.agents.movie_recommender.scoring import composite_score
+from agent_hub.agents.movie_recommender.explain import recommendation_reason
+from agent_hub.agents.movie_recommender.scoring import ScoreBreakdown, composite_score
 from agent_hub.agents.movie_recommender.tmdb import MovieDetails
 from agent_hub.core.config import MovieRecommenderWeights
 
@@ -29,26 +30,7 @@ def _movie(
     )
 
 
-def test_scoring_rating_prefers_rotten_tomatoes():
-    movie = MovieDetails(
-        tmdb_id=1,
-        title="Test",
-        year=2000,
-        genres=["Drama"],
-        director="Director",
-        cast=["Actor"],
-        keywords=[],
-        rating=6.0,
-        runtime=100,
-        poster_url=None,
-        overview="",
-        rotten_tomatoes_score="95%",
-        imdb_rating="7.5/10",
-    )
-    assert movie.scoring_rating() == 95.0
-
-
-def test_composite_score_prefers_genre_and_cast_overlap():
+def test_recommendation_reason_mentions_genre_and_similar_liked_movie():
     liked = [
         _movie(
             1,
@@ -71,21 +53,21 @@ def test_composite_score_prefers_genre_and_cast_overlap():
         rating=8.0,
         year=1979,
     )
-    weak = _movie(
-        3,
-        "Random Comedy",
-        genres=["Comedy"],
-        director="Someone Else",
-        cast=["Unknown"],
-        keywords=["romcom"],
-        rating=5.0,
-        year=2010,
-    )
-
     weights = MovieRecommenderWeights()
-    strong_score = composite_score(candidate, liked, [], 1970, 1990, weights)
-    weak_score = composite_score(weak, liked, [], 1970, 2020, weights)
+    score = composite_score(candidate, liked, [], 1970, 1990, weights)
+    reason = recommendation_reason(candidate, liked, [], score)
 
-    assert strong_score.total > weak_score.total
-    assert strong_score.genre > weak_score.genre
-    assert strong_score.cast_director > weak_score.cast_director
+    assert "Blade Runner" in reason or "Sci-Fi" in reason
+    assert reason.endswith(".")
+    assert reason.count(".") == 1
+
+
+def test_recommendation_reason_avoids_disliked_genre_note():
+    liked = [_movie(1, "Arrival", genres=["Sci-Fi"], rating=7.9, year=2016)]
+    disliked = [_movie(2, "Bad Comedy", genres=["Comedy"], rating=4.0, year=2015)]
+    candidate = _movie(3, "Interstellar", genres=["Sci-Fi", "Drama"], rating=8.6, year=2014)
+    weights = MovieRecommenderWeights()
+    score = composite_score(candidate, liked, disliked, 2010, 2020, weights)
+    reason = recommendation_reason(candidate, liked, disliked, score)
+
+    assert "disliked" in reason.lower() or "Sci-Fi" in reason

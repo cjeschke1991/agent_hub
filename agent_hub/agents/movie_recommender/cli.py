@@ -70,6 +70,7 @@ def recommend_cmd(
     year_max: int = typer.Option(2026, "--year-max"),
     genres: str = typer.Option("", "--genres", help="Comma-separated genre names."),
     count: int = typer.Option(10, "--count"),
+    kids_only: bool = typer.Option(False, "--kids-only", help="Recommend only Family/Animation films."),
 ) -> None:
     genre_names = [part.strip() for part in genres.split(",") if part.strip()]
     filters = RecommendFilters(
@@ -77,6 +78,7 @@ def recommend_cmd(
         year_max=year_max,
         genre_names=genre_names,
         count=count,
+        kids_only=kids_only,
     )
     try:
         results = recommend(filters)
@@ -90,6 +92,8 @@ def recommend_cmd(
             "title": item.movie.title,
             "year": item.movie.year,
             "score": item.score.total,
+            "reason": item.reason,
+            "metadata": item.movie.metadata_display(),
             "breakdown": item.score.as_labels(),
         }
         for item in results
