@@ -44,7 +44,28 @@ briefing status
 briefing open
 pinball init-db
 pinball export-status
+movie init-db
+movie status
+movie recommend --year-min 1980 --year-max 1990 --count 5
 ```
+
+## Movie Recommender
+
+The **Movie Recommender** tab builds a taste profile from movies you like and dislike, then returns ranked TMDB recommendations filtered by year range and genres.
+
+**TMDB API key (required for search/recommendations):**
+
+1. Create a free account at [themoviedb.org](https://www.themoviedb.org/signup)
+2. Request an API key at [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api)
+3. Set it in your shell (recommended):
+
+```bash
+export TMDB_API_KEY="your-key-here"
+```
+
+Or add to `config.yaml` under `tmdb.api_key` (do not commit real keys).
+
+Data is stored in `data/movies/movies.db`.
 
 ## Pinball Tracker
 

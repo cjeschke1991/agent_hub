@@ -1,6 +1,6 @@
 import streamlit as st
 
-from agent_hub.dashboards import daily_briefing, pinball_tracker, placeholder
+from agent_hub.dashboards import daily_briefing, movie_recommender, pinball_tracker, placeholder
 
 st.set_page_config(page_title="AI Agent Hub", page_icon="🤖", layout="wide")
 
@@ -10,6 +10,7 @@ TABS = [
     ("Gmail / Calendar Assistant", "gmail_calendar"),
     ("PRI Tracker", "pri_tracker"),
     ("Pinball Tracker", "pinball_tracker"),
+    ("Movie Recommender", "movie_recommender"),
     ("File Search", "file_search"),
     ("Finance Summaries", "finance_summaries"),
 ]
@@ -17,6 +18,7 @@ TABS = [
 ENABLED_TABS = {
     "daily_briefing": daily_briefing.render,
     "pinball_tracker": pinball_tracker.render,
+    "movie_recommender": movie_recommender.render,
 }
 
 PLACEHOLDER_COPY = {

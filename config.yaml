@@ -11,3 +11,15 @@ stale_hours:
 
 briefing:
   title: "Daily Briefing"
+
+# Optional: set TMDB_API_KEY in your environment instead of committing a key here.
+tmdb:
+  api_key: ""
+
+movie_recommender:
+  weights:
+    genre: 0.35
+    cast_director: 0.25
+    year: 0.15
+    rating: 0.15
+    keywords: 0.10
