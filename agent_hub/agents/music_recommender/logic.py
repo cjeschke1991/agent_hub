@@ -164,6 +164,8 @@ class MusicRecommendFilters:
     energy_max: float = 1.0
     valence_min: float = 0.0
     valence_max: float = 1.0
+    include_energy: bool = True
+    include_valence: bool = True
 
 
 def _row_to_taste_song(row: Any) -> TasteSong:
@@ -674,10 +676,26 @@ def recommend(
         seed_track_ids=seed_track_ids or None,
         seed_artist_ids=seed_artist_ids or None,
         seed_genres=explicit_genres[:5] if explicit_genres else None,
-        energy_min=filters.energy_min if filters.energy_min > 0 else None,
-        energy_max=filters.energy_max if filters.energy_max < 1 else None,
-        valence_min=filters.valence_min if filters.valence_min > 0 else None,
-        valence_max=filters.valence_max if filters.valence_max < 1 else None,
+        energy_min=(
+            filters.energy_min
+            if filters.include_energy and filters.energy_min > 0
+            else None
+        ),
+        energy_max=(
+            filters.energy_max
+            if filters.include_energy and filters.energy_max < 1
+            else None
+        ),
+        valence_min=(
+            filters.valence_min
+            if filters.include_valence and filters.valence_min > 0
+            else None
+        ),
+        valence_max=(
+            filters.valence_max
+            if filters.include_valence and filters.valence_max < 1
+            else None
+        ),
         limit=50,
         config=config,
     )
@@ -744,6 +762,8 @@ def recommend(
             year_max=filters.year_max,
             liked_years=liked_years,
             weights=weights,
+            include_energy=filters.include_energy,
+            include_valence=filters.include_valence,
         )
         reason = song_reason(
             candidate_title=details.title,
@@ -757,6 +777,8 @@ def recommend(
             disliked_genres=disliked_genres,
             liked_artist_names={a.name for a in liked_artists},
             candidate_artist_in_liked=details.artist_id in liked_artist_ids,
+            include_energy=filters.include_energy,
+            include_valence=filters.include_valence,
         )
         scored_songs.append(SongRecommendation(track=details, score=scr, reason=reason))
 

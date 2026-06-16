@@ -99,6 +99,98 @@ def test_artist_score_related_liked():
     assert scr.total > 0
 
 
+def test_song_score_excluding_energy_ignores_energy_dimension():
+    with_energy = song_score(
+        candidate_genres=["rock"],
+        candidate_energy=0.9,
+        candidate_valence=0.6,
+        candidate_danceability=0.5,
+        candidate_artist_id="a1",
+        candidate_year=2020,
+        candidate_popularity=70,
+        liked_genres={"rock"},
+        disliked_genres=set(),
+        liked_energy=[0.2],
+        liked_valence=[0.6],
+        liked_danceability=[0.5],
+        liked_artist_ids=set(),
+        related_artist_ids=set(),
+        year_min=1980,
+        year_max=2026,
+        liked_years=[2018],
+        weights=_weights(),
+        include_energy=True,
+    )
+    without_energy = song_score(
+        candidate_genres=["rock"],
+        candidate_energy=0.9,
+        candidate_valence=0.6,
+        candidate_danceability=0.5,
+        candidate_artist_id="a1",
+        candidate_year=2020,
+        candidate_popularity=70,
+        liked_genres={"rock"},
+        disliked_genres=set(),
+        liked_energy=[0.2],
+        liked_valence=[0.6],
+        liked_danceability=[0.5],
+        liked_artist_ids=set(),
+        related_artist_ids=set(),
+        year_min=1980,
+        year_max=2026,
+        liked_years=[2018],
+        weights=_weights(),
+        include_energy=False,
+    )
+    assert without_energy.audio_features > with_energy.audio_features
+
+
+def test_song_score_excluding_valence_ignores_mood_dimension():
+    with_valence = song_score(
+        candidate_genres=["rock"],
+        candidate_energy=0.7,
+        candidate_valence=0.9,
+        candidate_danceability=0.5,
+        candidate_artist_id="a1",
+        candidate_year=2020,
+        candidate_popularity=70,
+        liked_genres={"rock"},
+        disliked_genres=set(),
+        liked_energy=[0.7],
+        liked_valence=[0.2],
+        liked_danceability=[0.5],
+        liked_artist_ids=set(),
+        related_artist_ids=set(),
+        year_min=1980,
+        year_max=2026,
+        liked_years=[2018],
+        weights=_weights(),
+        include_valence=True,
+    )
+    without_valence = song_score(
+        candidate_genres=["rock"],
+        candidate_energy=0.7,
+        candidate_valence=0.9,
+        candidate_danceability=0.5,
+        candidate_artist_id="a1",
+        candidate_year=2020,
+        candidate_popularity=70,
+        liked_genres={"rock"},
+        disliked_genres=set(),
+        liked_energy=[0.7],
+        liked_valence=[0.2],
+        liked_danceability=[0.5],
+        liked_artist_ids=set(),
+        related_artist_ids=set(),
+        year_min=1980,
+        year_max=2026,
+        liked_years=[2018],
+        weights=_weights(),
+        include_valence=False,
+    )
+    assert without_valence.audio_features > with_valence.audio_features
+
+
 def test_artist_score_no_overlap():
     scr = artist_score(
         candidate_genres=["jazz"],

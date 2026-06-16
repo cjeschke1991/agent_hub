@@ -24,6 +24,9 @@ def song_reason(
     disliked_genres: set[str],
     liked_artist_names: set[str],
     candidate_artist_in_liked: bool,
+    *,
+    include_energy: bool = True,
+    include_valence: bool = True,
 ) -> str:
     parts: list[str] = []
     shared_genres = sorted(set(g for g in candidate_genres if g.lower() in liked_genres))
@@ -38,12 +41,12 @@ def song_reason(
 
     if score.audio_features >= 60:
         descriptors: list[str] = []
-        if candidate_energy is not None:
+        if include_energy and candidate_energy is not None:
             if candidate_energy >= 0.7:
                 descriptors.append("high-energy")
             elif candidate_energy <= 0.4:
                 descriptors.append("mellow")
-        if candidate_valence is not None:
+        if include_valence and candidate_valence is not None:
             if candidate_valence >= 0.7:
                 descriptors.append("upbeat")
             elif candidate_valence <= 0.3:

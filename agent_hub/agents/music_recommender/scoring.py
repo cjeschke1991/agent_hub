@@ -72,13 +72,17 @@ def _audio_distance(
     liked_energy: list[float],
     liked_valence: list[float],
     liked_danceability: list[float],
+    *,
+    include_energy: bool = True,
+    include_valence: bool = True,
 ) -> float:
     """Similarity score 0-100 based on Euclidean distance from liked centroid."""
-    dims: list[tuple[float | None, list[float]]] = [
-        (energy, liked_energy),
-        (valence, liked_valence),
-        (danceability, liked_danceability),
-    ]
+    dims: list[tuple[float | None, list[float]]] = []
+    if include_energy:
+        dims.append((energy, liked_energy))
+    if include_valence:
+        dims.append((valence, liked_valence))
+    dims.append((danceability, liked_danceability))
     valid = [(v, lst) for v, lst in dims if v is not None and lst]
     if not valid:
         return 0.0
@@ -109,6 +113,9 @@ def song_score(
     year_max: int,
     liked_years: list[int],
     weights: MusicRecommenderWeights,
+    *,
+    include_energy: bool = True,
+    include_valence: bool = True,
 ) -> SongScoreBreakdown:
     genre = _genre_overlap(candidate_genres, liked_genres, disliked_genres)
 
@@ -119,6 +126,8 @@ def song_score(
         liked_energy,
         liked_valence,
         liked_danceability,
+        include_energy=include_energy,
+        include_valence=include_valence,
     )
 
     if candidate_artist_id and candidate_artist_id in liked_artist_ids:

@@ -45,6 +45,8 @@ def _init_session_state() -> None:
         "music_artist_count": 10,
         "music_energy_range": (0.0, 1.0),
         "music_valence_range": (0.0, 1.0),
+        "music_include_energy": True,
+        "music_include_valence": True,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -396,21 +398,41 @@ def _render_recommendations() -> None:
             "Could not load genres from Spotify. Check your credentials and try restarting the app."
         )
 
-    energy_min, energy_max = st.slider(
-        "Energy (0 = chill, 1 = intense)",
-        min_value=0.0,
-        max_value=1.0,
-        step=0.05,
-        key="music_energy_range",
-    )
+    energy_col, energy_toggle_col = st.columns([5, 1])
+    with energy_toggle_col:
+        include_energy = st.toggle(
+            "Include",
+            value=st.session_state.music_include_energy,
+            key="music_include_energy",
+            help="When off, energy is ignored for Spotify filters and scoring.",
+        )
+    with energy_col:
+        energy_min, energy_max = st.slider(
+            "Energy (0 = chill, 1 = intense)",
+            min_value=0.0,
+            max_value=1.0,
+            step=0.05,
+            key="music_energy_range",
+            disabled=not include_energy,
+        )
 
-    valence_min, valence_max = st.slider(
-        "Mood (0 = melancholic, 1 = upbeat)",
-        min_value=0.0,
-        max_value=1.0,
-        step=0.05,
-        key="music_valence_range",
-    )
+    valence_col, valence_toggle_col = st.columns([5, 1])
+    with valence_toggle_col:
+        include_valence = st.toggle(
+            "Include",
+            value=st.session_state.music_include_valence,
+            key="music_include_valence",
+            help="When off, mood is ignored for Spotify filters and scoring.",
+        )
+    with valence_col:
+        valence_min, valence_max = st.slider(
+            "Mood (0 = melancholic, 1 = upbeat)",
+            min_value=0.0,
+            max_value=1.0,
+            step=0.05,
+            key="music_valence_range",
+            disabled=not include_valence,
+        )
 
     col_song_count, col_artist_count = st.columns(2)
     with col_song_count:
@@ -453,6 +475,8 @@ def _render_recommendations() -> None:
             energy_max=energy_max,
             valence_min=valence_min,
             valence_max=valence_max,
+            include_energy=include_energy,
+            include_valence=include_valence,
         )
         st.rerun()
 

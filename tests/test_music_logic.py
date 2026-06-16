@@ -247,3 +247,58 @@ def test_recommend_filters_by_selected_genre(music_config, monkeypatch):
 
     assert {item.track.spotify_id for item in songs} == {"rock-track"}
     assert {item.artist.spotify_id for item in artists} == {"rock-artist"}
+
+
+def test_recommend_excludes_energy_from_spotify_filters(music_config, monkeypatch):
+    captured: dict = {}
+
+    def fake_get_spotify_recommendations(**kwargs):
+        captured.update(kwargs)
+        return ["rock-track"]
+
+    catalog = {
+        "seed": _fake_track("seed", artist_id="liked-artist"),
+        "rock-track": _fake_track("rock-track", artist_id="rock-artist"),
+        "rock-artist": _fake_artist("rock-artist"),
+    }
+
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_track_details",
+        lambda sid, config=None: catalog[sid],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_artist_details",
+        lambda sid, config=None: catalog[sid],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_spotify_recommendations",
+        fake_get_spotify_recommendations,
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_artist_top_track_ids",
+        lambda artist_id, config=None: [],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.search_tracks_by_genre",
+        lambda genre, limit=20, config=None: [],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_related_artist_ids",
+        lambda artist_id, config=None: ["rock-artist"],
+    )
+
+    add_song("seed", "like", config=music_config)
+
+    recommend(
+        MusicRecommendFilters(
+            energy_min=0.2,
+            energy_max=0.8,
+            include_energy=False,
+            song_count=1,
+            artist_count=1,
+        ),
+        config=music_config,
+    )
+
+    assert captured.get("energy_min") is None
+    assert captured.get("energy_max") is None
