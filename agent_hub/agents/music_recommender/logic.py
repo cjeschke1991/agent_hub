@@ -24,6 +24,7 @@ from agent_hub.agents.music_recommender.spotify import (
     TrackDetails,
     collect_embed_candidate_artists,
     collect_embed_recommendation_tracks,
+    fetch_artist_top_tracks_from_embed,
     fetch_new_release_candidates,
     fetch_playlist_tracks_from_embed,
     fetch_track_details_from_embed,
@@ -927,20 +928,42 @@ def recommend(
     candidate_artist_ids -= taste_artist_ids_all
     candidate_artist_ids -= song_artist_ids
 
-    # Fallback: when related-artist API is blocked (403), extract candidate
-    # artists directly from the embed track cache. Each track there was fetched
-    # from a liked artist's top-tracks page, so the artists that appear most
-    # frequently are the closest neighbors of the user's taste.
+    # Fallback: when the related-artist Web API is 403-blocked, build candidates
+    # from embed data only.
+    #
+    # Strategy: the resolved liked-song artist IDs are themselves valid
+    # recommendations (the user enjoys their music but hasn't explicitly followed
+    # them). We also supplement the Zone-1 embed_track_cache — which caps at
+    # max_artists=8 — with top-tracks pages for any additional resolved artists,
+    # then extract all artist IDs not already in the explicitly liked/disliked
+    # artist sets.
     if not candidate_artist_ids:
-        # Build the embed cache on-demand if not already done during the song phase
+        # Ensure we have a cache to work from.
         if not embed_track_cache:
             embed_track_cache = collect_embed_recommendation_tracks(
                 liked_songs,
                 liked_artists,
             )
+
+        # Supplement cache: fetch top-tracks for resolved artists that Zone 1
+        # didn't cover (Zone 1 caps at max_artists=8).
+        artists_in_cache = {t.artist_id for t in embed_track_cache.values() if t.artist_id}
+        for artist_id in list(resolved_artist_ids)[:20]:
+            if artist_id in artists_in_cache:
+                continue
+            try:
+                for track in fetch_artist_top_tracks_from_embed(artist_id):
+                    embed_track_cache[track.spotify_id] = track
+            except SpotifyError:
+                pass
+
+        # Extract candidates: only exclude explicitly liked/disliked artists.
+        # Liked-song artists (in song_artist_ids) are NOT excluded here — they
+        # are valid "discover this artist" recommendations when the user hasn't
+        # already followed them.
         embed_candidates = collect_embed_candidate_artists(
             embed_track_cache,
-            excluded_ids=taste_artist_ids_all | song_artist_ids,
+            excluded_ids=taste_artist_ids_all,
         )
         candidate_artist_ids.update(embed_candidates)
 
