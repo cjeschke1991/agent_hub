@@ -26,7 +26,11 @@ from agent_hub.agents.music_recommender.logic import (
     search_artists_query,
     search_songs,
 )
-from agent_hub.agents.music_recommender.spotify import SpotifyConfigError, spotify_configured
+from agent_hub.agents.music_recommender.spotify import (
+    SpotifyConfigError,
+    SpotifyError,
+    spotify_configured,
+)
 from agent_hub.core.config import load_config
 
 
@@ -47,10 +51,13 @@ def _init_session_state() -> None:
         "music_valence_range": (0.0, 1.0),
         "music_include_energy": True,
         "music_include_valence": True,
+        "music_recs_status": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+    if st.session_state.music_recs_loading and not st.session_state.music_pending_filters:
+        st.session_state.music_recs_loading = False
 
 
 def _setup_instructions() -> None:
@@ -80,10 +87,8 @@ def _loading_css() -> None:
             color: #ffffff !important;
         }
         .st-key-music_get_recs button:disabled {
-            background-color: #2563eb !important;
-            border-color: #2563eb !important;
-            color: #ffffff !important;
-            opacity: 0.95 !important;
+            opacity: 0.45 !important;
+            cursor: not-allowed !important;
         }
         </style>
         """,
@@ -402,7 +407,6 @@ def _render_recommendations() -> None:
     with energy_toggle_col:
         include_energy = st.toggle(
             "Include",
-            value=st.session_state.music_include_energy,
             key="music_include_energy",
             help="When off, energy is ignored for Spotify filters and scoring.",
         )
@@ -420,7 +424,6 @@ def _render_recommendations() -> None:
     with valence_toggle_col:
         include_valence = st.toggle(
             "Include",
-            value=st.session_state.music_include_valence,
             key="music_include_valence",
             help="When off, mood is ignored for Spotify filters and scoring.",
         )
@@ -450,10 +453,15 @@ def _render_recommendations() -> None:
             key="music_artist_count",
         )
 
-    if not has_taste:
-        st.caption("Add at least one liked song or artist in the **Add Music** tab first.")
-
     recommend_disabled = not has_taste or not spotify_configured() or st.session_state.music_recs_loading
+
+    if recommend_disabled and not st.session_state.music_recs_loading:
+        if not has_taste:
+            st.warning(
+                "Add at least one liked song or artist in the **Add Music** tab before getting recommendations."
+            )
+        elif not spotify_configured():
+            st.warning("Spotify credentials are required for recommendations.")
 
     if st.session_state.music_recs_loading:
         _loading_css()
@@ -464,6 +472,7 @@ def _render_recommendations() -> None:
         use_container_width=True,
         disabled=recommend_disabled,
     ):
+        st.session_state.music_recs_status = None
         st.session_state.music_recs_loading = True
         st.session_state.music_pending_filters = MusicRecommendFilters(
             year_min=year_min,
@@ -487,19 +496,46 @@ def _render_recommendations() -> None:
                 songs, artists = recommend(pending)
             st.session_state.music_song_recs = songs
             st.session_state.music_artist_recs = artists
-        except (SpotifyConfigError, MusicRecommendationError, MusicValidationError) as exc:
-            st.error(str(exc))
+            if not songs and not artists:
+                st.session_state.music_recs_status = (
+                    "warning",
+                    "No songs or artists matched your filters. Try widening the year range, "
+                    "clearing genre filters, or adding more liked music.",
+                )
+            else:
+                st.session_state.music_recs_status = None
+        except (SpotifyConfigError, MusicRecommendationError, MusicValidationError, SpotifyError) as exc:
+            st.session_state.music_recs_status = ("error", str(exc))
             st.session_state.music_song_recs = []
             st.session_state.music_artist_recs = []
-        st.session_state.music_recs_loading = False
-        st.session_state.music_pending_filters = None
+        except Exception as exc:
+            st.session_state.music_recs_status = (
+                "error",
+                f"Unexpected error while fetching recommendations: {exc}",
+            )
+            st.session_state.music_song_recs = []
+            st.session_state.music_artist_recs = []
+        finally:
+            st.session_state.music_recs_loading = False
+            st.session_state.music_pending_filters = None
         st.rerun()
+
+    status = st.session_state.music_recs_status
+    if status:
+        kind, message = status
+        if kind == "error":
+            st.error(message)
+        elif kind == "warning":
+            st.warning(message)
+        else:
+            st.info(message)
 
     song_recs = st.session_state.music_song_recs
     artist_recs = st.session_state.music_artist_recs
 
     if not song_recs and not artist_recs:
-        st.caption("No recommendations yet — click **Get recommendations** above.")
+        if not status:
+            st.caption("No recommendations yet — click **Get recommendations** above.")
         return
 
     wishlist_song_ids = {s.spotify_id for s in list_wishlist_songs()}
