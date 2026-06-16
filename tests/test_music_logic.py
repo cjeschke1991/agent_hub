@@ -234,6 +234,7 @@ def test_recommend_filters_by_selected_genre(music_config, monkeypatch):
     )
 
     add_song("seed", "like", config=music_config)
+    add_artist("liked-artist", "like", config=music_config)
 
     songs, artists = recommend(
         MusicRecommendFilters(
