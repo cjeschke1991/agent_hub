@@ -625,6 +625,89 @@ def collect_embed_candidate_artists(
     return result
 
 
+_COLLAB_TEXT_RE = re.compile(
+    r",|\s&\s|\bfeat\.?\b|\bfeaturing\b|\bwith\b",
+    re.IGNORECASE,
+)
+
+
+def artist_text_suggests_collaboration(text: str) -> bool:
+    return bool(_COLLAB_TEXT_RE.search(text))
+
+
+def _artist_ids_from_embed_entity(entity: dict) -> list[str]:
+    ids: list[str] = []
+    for artist in entity.get("artists") or []:
+        uri = str(artist.get("uri") or "")
+        if uri.startswith("spotify:artist:"):
+            artist_id = uri.split(":", 2)[2]
+            if is_spotify_catalog_id(artist_id) and artist_id not in ids:
+                ids.append(artist_id)
+    return ids
+
+
+def fetch_track_artist_ids_from_embed(track_id: str) -> list[str]:
+    """Return every artist ID credited on a track's public embed page."""
+    track_id = track_id.strip()
+    if not is_spotify_catalog_id(track_id):
+        return []
+    payload = _fetch_embed_next_data(f"track/{track_id}")
+    entity = (
+        payload.get("props", {})
+        .get("pageProps", {})
+        .get("state", {})
+        .get("data", {})
+        .get("entity", {})
+    )
+    return _artist_ids_from_embed_entity(entity)
+
+
+def collect_collaborator_artist_candidates(
+    liked_songs: list,
+    embed_track_cache: dict[str, TrackDetails],
+    seed_artist_ids: set[str],
+    *,
+    max_liked_track_lookups: int = 50,
+) -> list[str]:
+    """Discover collaborator artist IDs from track embed metadata.
+
+    Spotify's public embed pages list every credited artist on a track. When the
+    Web API related-artists endpoint is unavailable, collaborators on the user's
+    liked songs and top-track cache are the best discovery signal available.
+    """
+    seeds = {aid for aid in seed_artist_ids if is_spotify_catalog_id(aid)}
+    seen = set(seeds)
+    results: list[str] = []
+
+    def add_collaborators(track_id: str) -> None:
+        if not is_spotify_catalog_id(track_id):
+            return
+        try:
+            artist_ids = fetch_track_artist_ids_from_embed(track_id)
+        except SpotifyError:
+            return
+        for artist_id in artist_ids:
+            if artist_id in seeds or artist_id in seen:
+                continue
+            seen.add(artist_id)
+            results.append(artist_id)
+
+    liked_lookups = 0
+    for song in liked_songs:
+        if not is_spotify_catalog_id(song.spotify_id):
+            continue
+        add_collaborators(song.spotify_id)
+        liked_lookups += 1
+        if liked_lookups >= max_liked_track_lookups:
+            break
+
+    for track_id, track in embed_track_cache.items():
+        if artist_text_suggests_collaboration(track.artist):
+            add_collaborators(track_id)
+
+    return results
+
+
 def fetch_new_release_candidates(
     *,
     limit: int = 40,

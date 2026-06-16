@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
 
 from agent_hub.agents.music_recommender.logic import (
     _upsert_taste_artist,
+    is_collaboration_artist_name,
     list_liked_artists,
     list_liked_songs,
 )
@@ -83,6 +84,9 @@ def main() -> None:
     errors = 0
 
     for artist_id, artist_name in artist_map.items():
+        if is_collaboration_artist_name(artist_name):
+            skipped += 1
+            continue
         if artist_id in existing_ids:
             skipped += 1
             continue

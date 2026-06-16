@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +23,7 @@ from agent_hub.agents.music_recommender.spotify import (
     SpotifyConfigError,
     SpotifyError,
     TrackDetails,
+    collect_collaborator_artist_candidates,
     collect_embed_candidate_artists,
     collect_embed_recommendation_tracks,
     fetch_artist_top_tracks_from_embed,
@@ -647,6 +649,97 @@ def _build_liked_sets(
     )
 
 
+def _normalize_music_text(value: str) -> str:
+    return " ".join(value.lower().split())
+
+
+def is_collaboration_artist_name(name: str) -> bool:
+    """True when a name looks like a multi-artist track credit, not a single act."""
+    cleaned = re.sub(r"\s+explicit$", "", name.strip(), flags=re.IGNORECASE)
+    cleaned = " ".join(cleaned.split())
+    if not cleaned:
+        return False
+
+    lower = cleaned.lower()
+    if re.search(r",|\bfeat\.?\b|\bfeaturing\b|\bwith\b", lower):
+        return True
+
+    if " & " not in cleaned and not re.search(r"\band\b", lower):
+        return False
+
+    # Keep band names like "Andy Frasco & The U.N."
+    if re.match(r"^.+\s&\s+The\s+", cleaned, re.IGNORECASE) and "," not in cleaned:
+        if cleaned.count(" & ") == 1 and " feat" not in lower:
+            return False
+
+    return True
+
+
+def remove_collaboration_liked_artists(config: HubConfig | None = None) -> list[TasteArtist]:
+    """Remove liked artists whose names are multi-artist collaboration credits."""
+    removed: list[TasteArtist] = []
+    for artist in list_liked_artists(config):
+        if is_collaboration_artist_name(artist.name):
+            remove_artist(artist.spotify_id, config=config)
+            removed.append(artist)
+    return removed
+
+
+def _normalize_song_title_base(title: str) -> str:
+    """Reduce a track title to its core song name, stripping version suffixes."""
+    cleaned = re.sub(r"\s+explicit$", "", title.strip(), flags=re.IGNORECASE)
+    cleaned = " ".join(cleaned.split())
+    prev = None
+    while prev != cleaned:
+        prev = cleaned
+        cleaned = re.sub(r"\s*[\(\[][^\)\]]*[\)\]]", "", cleaned).strip()
+    cleaned = re.sub(
+        r"\s*-\s+(live|remaster(?:ed)?|remix|acoustic|radio edit|extended mix|"
+        r"extended version|version|edit|demo|instrumental|live at|live in)\b.*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+    return _normalize_music_text(cleaned) or _normalize_music_text(title)
+
+
+def _normalize_artist_base(artist: str) -> str:
+    cleaned = re.sub(r"\s+explicit$", "", artist.strip(), flags=re.IGNORECASE)
+    return _normalize_music_text(cleaned)
+
+
+def _song_variation_key(title: str, artist: str) -> tuple[str, str]:
+    return (_normalize_song_title_base(title), _normalize_artist_base(artist))
+
+
+def _song_identity_key(title: str, artist: str) -> tuple[str, str]:
+    return (_normalize_music_text(title), _normalize_music_text(artist))
+
+
+def _track_is_liked(track: TrackDetails, liked_songs: list[TasteSong]) -> bool:
+    variation_key = _song_variation_key(track.title, track.artist)
+    for song in liked_songs:
+        if song.spotify_id and song.spotify_id == track.spotify_id:
+            return True
+        if _song_identity_key(song.title, song.artist) == _song_identity_key(
+            track.title, track.artist
+        ):
+            return True
+        if _song_variation_key(song.title, song.artist) == variation_key:
+            return True
+    return False
+
+
+def _artist_is_liked(artist: ArtistDetails, liked_artists: list[TasteArtist]) -> bool:
+    norm_name = _normalize_music_text(artist.name)
+    for liked in liked_artists:
+        if liked.spotify_id and liked.spotify_id == artist.spotify_id:
+            return True
+        if _normalize_music_text(liked.name) == norm_name:
+            return True
+    return False
+
+
 def recommend(
     filters: MusicRecommendFilters,
     config: HubConfig | None = None,
@@ -783,6 +876,8 @@ def recommend(
                 details = get_track_details_with_fallback(track_id, config=config)
             except SpotifyError:
                 return None
+        if _track_is_liked(details, liked_songs):
+            return None
         if filters.include_year and details.year is not None and (
             details.year < filters.year_min or details.year > filters.year_max
         ):
@@ -889,7 +984,10 @@ def recommend(
         backfill_pool.sort(key=lambda x: x.score.total, reverse=True)
         top_safe += backfill_pool[:shortage]
 
-    top_songs = top_safe + top_stretch + top_wild
+    top_songs = [
+        rec for rec in (top_safe + top_stretch + top_wild)
+        if not _track_is_liked(rec.track, liked_songs)
+    ]
 
     # --- Artist candidates ---
     candidate_artist_ids: set[str] = set()
@@ -928,25 +1026,21 @@ def recommend(
     candidate_artist_ids -= taste_artist_ids_all
     candidate_artist_ids -= song_artist_ids
 
-    # Fallback: when the related-artist Web API is 403-blocked, build candidates
-    # from embed data only.
-    #
-    # Strategy: the resolved liked-song artist IDs are themselves valid
-    # recommendations (the user enjoys their music but hasn't explicitly followed
-    # them). We also supplement the Zone-1 embed_track_cache — which caps at
-    # max_artists=8 — with top-tracks pages for any additional resolved artists,
-    # then extract all artist IDs not already in the explicitly liked/disliked
-    # artist sets.
+    seed_artist_ids = (
+        resolved_artist_ids
+        | {a.spotify_id for a in liked_artists if is_spotify_catalog_id(a.spotify_id)}
+        | {a.spotify_id for a in disliked_artists if is_spotify_catalog_id(a.spotify_id)}
+    )
+
+    # Fallback: when the related-artist Web API is 403-blocked, discover collaborators
+    # credited on the user's liked songs and collab top-tracks from embed pages.
     if not candidate_artist_ids:
-        # Ensure we have a cache to work from.
         if not embed_track_cache:
             embed_track_cache = collect_embed_recommendation_tracks(
                 liked_songs,
                 liked_artists,
             )
 
-        # Supplement cache: fetch top-tracks for resolved artists that Zone 1
-        # didn't cover (Zone 1 caps at max_artists=8).
         artists_in_cache = {t.artist_id for t in embed_track_cache.values() if t.artist_id}
         for artist_id in list(resolved_artist_ids)[:20]:
             if artist_id in artists_in_cache:
@@ -957,15 +1051,15 @@ def recommend(
             except SpotifyError:
                 pass
 
-        # Extract candidates: only exclude explicitly liked/disliked artists.
-        # Liked-song artists (in song_artist_ids) are NOT excluded here — they
-        # are valid "discover this artist" recommendations when the user hasn't
-        # already followed them.
-        embed_candidates = collect_embed_candidate_artists(
-            embed_track_cache,
-            excluded_ids=taste_artist_ids_all,
+        candidate_artist_ids.update(
+            collect_collaborator_artist_candidates(
+                liked_songs,
+                embed_track_cache,
+                seed_artist_ids,
+            )
         )
-        candidate_artist_ids.update(embed_candidates)
+        candidate_artist_ids -= taste_artist_ids_all
+        candidate_artist_ids -= seed_artist_ids
 
     # Count how many embed cache tracks belong to each candidate (relatedness proxy)
     embed_artist_track_counts: dict[str, int] = {}
@@ -989,6 +1083,8 @@ def recommend(
         try:
             details = get_artist_details_with_fallback(candidate_id, config=config)
         except SpotifyError:
+            continue
+        if _artist_is_liked(details, liked_artists):
             continue
         if explicit_genres:
             if not details.genres:
