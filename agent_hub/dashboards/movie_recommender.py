@@ -32,8 +32,7 @@ def _init_session_state() -> None:
         "movie_recommendations_loading": False,
         "movie_pending_filters": None,
         "movie_kids_only": False,
-        "movie_year_min": 1980,
-        "movie_year_max": 2026,
+        "movie_year_range": (1980, 2026),
         "movie_rec_count": 10,
     }
     for key, value in defaults.items():
@@ -226,10 +225,8 @@ def _render_recommendations() -> None:
         "Release years",
         min_value=1950,
         max_value=2030,
-        value=(st.session_state.movie_year_min, st.session_state.movie_year_max),
+        key="movie_year_range",
     )
-    st.session_state.movie_year_min = year_min
-    st.session_state.movie_year_max = year_max
 
     selected_genres: list[str] = []
     if not tmdb_configured():
@@ -242,8 +239,12 @@ def _render_recommendations() -> None:
         )
     else:
         st.caption("Could not load genres from TMDB. Check your API key and try restarting the app.")
-    count = st.slider("Number of recommendations", min_value=1, max_value=20, value=st.session_state.movie_rec_count)
-    st.session_state.movie_rec_count = count
+    count = st.slider(
+        "Number of recommendations",
+        min_value=1,
+        max_value=20,
+        key="movie_rec_count",
+    )
 
     kids_only = st.toggle(
         "Kids movies only",

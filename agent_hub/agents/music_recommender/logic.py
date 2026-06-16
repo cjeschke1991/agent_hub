@@ -4,6 +4,11 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from agent_hub.agents.music_recommender.pandora import (
+    fetch_pandora_playlist_tracks,
+    parse_tracks_from_accessibility_snapshot,
+    track_details_from_pandora,
+)
 from agent_hub.agents.music_recommender.explain import artist_reason, song_reason
 from agent_hub.agents.music_recommender.scoring import (
     ArtistScoreBreakdown,
@@ -16,6 +21,8 @@ from agent_hub.agents.music_recommender.spotify import (
     SpotifyConfigError,
     SpotifyError,
     TrackDetails,
+    fetch_playlist_tracks_from_embed,
+    get_available_genre_seeds,
     get_artist_details,
     get_artist_top_track_ids,
     get_related_artist_ids,
@@ -520,6 +527,74 @@ def search_artists_query(query: str, config: HubConfig | None = None):  # type: 
     return search_artists(query, config=config)
 
 
+def get_spotify_genres(config: HubConfig | None = None) -> list[str]:
+    """Return Spotify recommendation genre seeds for UI filters."""
+    if not spotify_configured(config):
+        raise SpotifyConfigError("Spotify is not configured.")
+    return get_available_genre_seeds(config=config)
+
+
+def import_liked_songs_from_playlist(
+    playlist: str,
+    config: HubConfig | None = None,
+) -> tuple[int, int, list[str]]:
+    """Import tracks from a public Spotify playlist URL/ID into liked songs."""
+    ensure_db(config)
+    tracks = fetch_playlist_tracks_from_embed(playlist, config=config)
+    existing = {song.spotify_id for song in list_liked_songs(config)}
+    added = 0
+    skipped = 0
+    titles: list[str] = []
+    for track in tracks:
+        if track.spotify_id in existing:
+            skipped += 1
+            continue
+        _upsert_taste_song(track, "like", config=config)
+        existing.add(track.spotify_id)
+        added += 1
+        titles.append(f"{track.title} — {track.artist}")
+    return added, skipped, titles
+
+
+def add_liked_song_metadata(
+    title: str,
+    artist: str,
+    config: HubConfig | None = None,
+) -> TasteSong:
+    ensure_db(config)
+    details = track_details_from_pandora(title, artist)
+    return _upsert_taste_song(details, "like", config=config)
+
+
+def import_liked_songs_from_pandora_tracks(
+    tracks: list[tuple[str, str]],
+    config: HubConfig | None = None,
+) -> tuple[int, int, list[str]]:
+    ensure_db(config)
+    existing = {song.spotify_id for song in list_liked_songs(config)}
+    added = 0
+    skipped = 0
+    titles: list[str] = []
+    for title, artist in tracks:
+        details = track_details_from_pandora(title, artist)
+        if details.spotify_id in existing:
+            skipped += 1
+            continue
+        _upsert_taste_song(details, "like", config=config)
+        existing.add(details.spotify_id)
+        added += 1
+        titles.append(f"{title} — {artist}")
+    return added, skipped, titles
+
+
+def import_liked_songs_from_pandora_url(
+    url: str,
+    config: HubConfig | None = None,
+) -> tuple[int, int, list[str]]:
+    tracks = fetch_pandora_playlist_tracks(url)
+    return import_liked_songs_from_pandora_tracks(tracks, config=config)
+
+
 def _build_liked_sets(
     liked_songs: list[TasteSong],
     disliked_songs: list[TasteSong],
@@ -586,6 +661,8 @@ def recommend(
     taste_spotify_ids = {s.spotify_id for s in liked_songs + disliked_songs}
 
     weights = config.music_recommender.weights
+    explicit_genres = filters.genre_names or []
+    search_genres = explicit_genres or sorted(liked_genres)[:3]
 
     # --- Song candidates ---
     candidate_track_ids: set[str] = set()
@@ -596,6 +673,7 @@ def recommend(
     recs = get_spotify_recommendations(
         seed_track_ids=seed_track_ids or None,
         seed_artist_ids=seed_artist_ids or None,
+        seed_genres=explicit_genres[:5] if explicit_genres else None,
         energy_min=filters.energy_min if filters.energy_min > 0 else None,
         energy_max=filters.energy_max if filters.energy_max < 1 else None,
         valence_min=filters.valence_min if filters.valence_min > 0 else None,
@@ -615,8 +693,7 @@ def recommend(
             candidate_track_ids.update(top[:3])
 
     # Genre search fallback
-    filter_genres = filters.genre_names or sorted(liked_genres)[:3]
-    for genre in filter_genres[:3]:
+    for genre in search_genres[:3]:
         ids = search_tracks_by_genre(genre, limit=10, config=config)
         candidate_track_ids.update(ids)
 
@@ -638,8 +715,13 @@ def recommend(
             details.year < filters.year_min or details.year > filters.year_max
         ):
             continue
-        if filter_genres and not any(
-            g.lower() in {fg.lower() for fg in filter_genres} for g in details.genres
+        if explicit_genres:
+            if not any(
+                g.lower() in {fg.lower() for fg in explicit_genres} for g in details.genres
+            ):
+                continue
+        elif search_genres and not any(
+            g.lower() in {fg.lower() for fg in search_genres} for g in details.genres
         ):
             if liked_genres and not any(g.lower() in liked_genres for g in details.genres):
                 continue
@@ -707,6 +789,10 @@ def recommend(
         try:
             details = get_artist_details(candidate_id, config=config)
         except SpotifyError:
+            continue
+        if explicit_genres and not any(
+            g.lower() in {fg.lower() for fg in explicit_genres} for g in details.genres
+        ):
             continue
         related_ids = artist_related_map.get(candidate_id, [])
         related_liked_count = len(set(related_ids) & liked_artist_ids)

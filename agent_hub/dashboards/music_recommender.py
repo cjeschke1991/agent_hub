@@ -11,6 +11,7 @@ from agent_hub.agents.music_recommender.logic import (
     add_song,
     add_song_to_wishlist,
     ensure_db,
+    get_spotify_genres,
     list_disliked_artists,
     list_disliked_songs,
     list_liked_artists,
@@ -39,14 +40,11 @@ def _init_session_state() -> None:
         "music_artist_recs": [],
         "music_recs_loading": False,
         "music_pending_filters": None,
-        "music_year_min": 1980,
-        "music_year_max": 2026,
+        "music_year_range": (1980, 2026),
         "music_song_count": 10,
         "music_artist_count": 10,
-        "music_energy_min": 0.0,
-        "music_energy_max": 1.0,
-        "music_valence_min": 0.0,
-        "music_valence_max": 1.0,
+        "music_energy_range": (0.0, 1.0),
+        "music_valence_range": (0.0, 1.0),
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -374,44 +372,61 @@ def _render_recommendations() -> None:
         "Release years",
         min_value=1950,
         max_value=2030,
-        value=(st.session_state.music_year_min, st.session_state.music_year_max),
+        key="music_year_range",
     )
-    st.session_state.music_year_min = year_min
-    st.session_state.music_year_max = year_max
+
+    genre_options: list[str] = []
+    if spotify_configured():
+        try:
+            genre_options = get_spotify_genres()
+        except SpotifyConfigError as exc:
+            st.error(str(exc))
+
+    selected_genres: list[str] = []
+    if not spotify_configured():
+        st.caption("Genre filter unavailable until Spotify credentials are configured.")
+    elif genre_options:
+        selected_genres = st.multiselect(
+            "Genres (leave empty for any genre)",
+            options=sorted(genre_options),
+            default=[],
+        )
+    else:
+        st.caption(
+            "Could not load genres from Spotify. Check your credentials and try restarting the app."
+        )
 
     energy_min, energy_max = st.slider(
         "Energy (0 = chill, 1 = intense)",
         min_value=0.0,
         max_value=1.0,
         step=0.05,
-        value=(st.session_state.music_energy_min, st.session_state.music_energy_max),
+        key="music_energy_range",
     )
-    st.session_state.music_energy_min = energy_min
-    st.session_state.music_energy_max = energy_max
 
     valence_min, valence_max = st.slider(
         "Mood (0 = melancholic, 1 = upbeat)",
         min_value=0.0,
         max_value=1.0,
         step=0.05,
-        value=(st.session_state.music_valence_min, st.session_state.music_valence_max),
+        key="music_valence_range",
     )
-    st.session_state.music_valence_min = valence_min
-    st.session_state.music_valence_max = valence_max
 
     col_song_count, col_artist_count = st.columns(2)
     with col_song_count:
         song_count = st.slider(
-            "Songs to recommend", min_value=1, max_value=20,
-            value=st.session_state.music_song_count,
+            "Songs to recommend",
+            min_value=1,
+            max_value=20,
+            key="music_song_count",
         )
-        st.session_state.music_song_count = song_count
     with col_artist_count:
         artist_count = st.slider(
-            "Artists to recommend", min_value=1, max_value=20,
-            value=st.session_state.music_artist_count,
+            "Artists to recommend",
+            min_value=1,
+            max_value=20,
+            key="music_artist_count",
         )
-        st.session_state.music_artist_count = artist_count
 
     if not has_taste:
         st.caption("Add at least one liked song or artist in the **Add Music** tab first.")
@@ -431,6 +446,7 @@ def _render_recommendations() -> None:
         st.session_state.music_pending_filters = MusicRecommendFilters(
             year_min=year_min,
             year_max=year_max,
+            genre_names=selected_genres or None,
             song_count=song_count,
             artist_count=artist_count,
             energy_min=energy_min,

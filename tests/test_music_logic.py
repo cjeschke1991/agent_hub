@@ -3,16 +3,19 @@ from pathlib import Path
 import pytest
 
 from agent_hub.agents.music_recommender.logic import (
+    MusicRecommendFilters,
     add_artist,
     add_song,
     add_artist_to_wishlist,
     add_song_to_wishlist,
+    get_spotify_genres,
     list_disliked_artists,
     list_disliked_songs,
     list_liked_artists,
     list_liked_songs,
     list_wishlist_artists,
     list_wishlist_songs,
+    recommend,
     remove_artist,
     remove_song,
     remove_artist_from_wishlist,
@@ -162,3 +165,84 @@ def test_update_sentiment_on_re_add(music_config, monkeypatch):
     assert liked == []
     assert len(disliked) == 1
     assert disliked[0].spotify_id == "t5"
+
+
+def test_get_spotify_genres(music_config, monkeypatch):
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_available_genre_seeds",
+        lambda config=None: ["rock", "pop", "jazz"],
+    )
+    assert get_spotify_genres(music_config) == ["rock", "pop", "jazz"]
+
+
+def test_recommend_filters_by_selected_genre(music_config, monkeypatch):
+    catalog = {
+        "seed": _fake_track("seed", artist_id="liked-artist"),
+        "rock-track": _fake_track("rock-track", artist_id="rock-artist"),
+        "pop-track": TrackDetails(
+            spotify_id="pop-track",
+            title="Pop Song",
+            artist="Pop Artist",
+            artist_id="pop-artist",
+            album="Pop Album",
+            year=2021,
+            genres=["pop"],
+            energy=0.5,
+            valence=0.5,
+            danceability=0.5,
+            tempo=110.0,
+            popularity=60,
+            duration_ms=200000,
+            image_url=None,
+            preview_url=None,
+        ),
+        "rock-artist": _fake_artist("rock-artist"),
+        "pop-artist": ArtistDetails(
+            spotify_id="pop-artist",
+            name="Pop Artist",
+            genres=["pop"],
+            popularity=70,
+            followers=50000,
+            image_url=None,
+        ),
+        "liked-artist": _fake_artist("liked-artist"),
+    }
+
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_track_details",
+        lambda sid, config=None: catalog[sid],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_artist_details",
+        lambda sid, config=None: catalog[sid],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_spotify_recommendations",
+        lambda **kwargs: ["rock-track", "pop-track"],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_artist_top_track_ids",
+        lambda artist_id, config=None: [],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.search_tracks_by_genre",
+        lambda genre, limit=20, config=None: [],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_related_artist_ids",
+        lambda artist_id, config=None: ["rock-artist", "pop-artist"],
+    )
+
+    add_song("seed", "like", config=music_config)
+
+    songs, artists = recommend(
+        MusicRecommendFilters(
+            genre_names=["rock"],
+            song_count=5,
+            artist_count=5,
+        ),
+        config=music_config,
+    )
+
+    assert {item.track.spotify_id for item in songs} == {"rock-track"}
+    assert {item.artist.spotify_id for item in artists} == {"rock-artist"}

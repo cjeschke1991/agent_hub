@@ -362,3 +362,78 @@ def get_available_genre_seeds(config: HubConfig | None = None) -> list[str]:
         return list(payload.get("genres", []))
     except SpotifyError:
         return []
+
+
+def parse_playlist_id(value: str) -> str:
+    value = value.strip()
+    if "open.spotify.com/playlist/" in value:
+        tail = value.split("open.spotify.com/playlist/", 1)[1]
+        return tail.split("?", 1)[0].split("/", 1)[0]
+    if value.startswith("spotify:playlist:"):
+        return value.split(":", 2)[2]
+    return value
+
+
+def fetch_playlist_tracks_from_embed(
+    playlist_id: str,
+    config: HubConfig | None = None,
+) -> list[TrackDetails]:
+    """Fetch public playlist tracks via Spotify embed page (no Premium API needed)."""
+    playlist_id = parse_playlist_id(playlist_id)
+    embed_url = f"https://open.spotify.com/embed/playlist/{playlist_id}"
+    request = urllib.request.Request(embed_url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            html = response.read().decode("utf-8", errors="replace")
+    except urllib.error.URLError as exc:
+        raise SpotifyError(f"Could not fetch playlist embed page: {exc.reason}") from exc
+
+    import re
+
+    match = re.search(
+        r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>',
+        html,
+    )
+    if not match:
+        raise SpotifyError("Could not parse playlist data from Spotify embed page.")
+
+    payload = json.loads(match.group(1))
+    track_list = (
+        payload.get("props", {})
+        .get("pageProps", {})
+        .get("state", {})
+        .get("data", {})
+        .get("entity", {})
+        .get("trackList", [])
+    )
+    if not track_list:
+        raise SpotifyError("Playlist embed page did not contain any tracks.")
+
+    tracks: list[TrackDetails] = []
+    for item in track_list:
+        uri = str(item.get("uri") or "")
+        if not uri.startswith("spotify:track:"):
+            continue
+        spotify_id = uri.split(":", 2)[2]
+        preview = item.get("audioPreview") or {}
+        tracks.append(
+            TrackDetails(
+                spotify_id=spotify_id,
+                title=str(item.get("title") or "Unknown"),
+                artist=str(item.get("subtitle") or "Unknown"),
+                artist_id="",
+                album="",
+                year=None,
+                genres=[],
+                energy=None,
+                valence=None,
+                danceability=None,
+                tempo=None,
+                popularity=0,
+                duration_ms=int(item["duration"]) if item.get("duration") else None,
+                image_url=None,
+                preview_url=preview.get("url"),
+            )
+        )
+    return tracks
+
