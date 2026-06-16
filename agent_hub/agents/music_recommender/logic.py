@@ -15,6 +15,7 @@ from agent_hub.agents.music_recommender.scoring import (
     ArtistScoreBreakdown,
     SongScoreBreakdown,
     artist_score,
+    artist_taste_text_match,
     song_score,
     taste_text_similarity,
 )
@@ -1032,6 +1033,8 @@ def recommend(
         | {a.spotify_id for a in disliked_artists if is_spotify_catalog_id(a.spotify_id)}
     )
 
+    collaborator_counts: dict[str, int] = {}
+
     # Fallback: when the related-artist Web API is 403-blocked, discover collaborators
     # credited on the user's liked songs and collab top-tracks from embed pages.
     if not candidate_artist_ids:
@@ -1051,13 +1054,12 @@ def recommend(
             except SpotifyError:
                 pass
 
-        candidate_artist_ids.update(
-            collect_collaborator_artist_candidates(
-                liked_songs,
-                embed_track_cache,
-                seed_artist_ids,
-            )
+        collaborator_counts = collect_collaborator_artist_candidates(
+            liked_songs,
+            embed_track_cache,
+            seed_artist_ids,
         )
+        candidate_artist_ids.update(collaborator_counts.keys())
         candidate_artist_ids -= taste_artist_ids_all
         candidate_artist_ids -= seed_artist_ids
 
@@ -1073,6 +1075,9 @@ def recommend(
     for candidate_id in list(candidate_artist_ids)[:40]:
         related = get_related_artist_ids(candidate_id, config=config)
         artist_related_map[candidate_id] = related
+
+    liked_artist_name_list = [a.name for a in liked_artists]
+    liked_song_artist_list = [s.artist for s in liked_songs]
 
     scored_artists: list[ArtistRecommendation] = []
     seen_artist_ids: set[str] = set()
@@ -1107,6 +1112,12 @@ def recommend(
             year_max=filters.year_max,
             weights=weights,
             embed_liked_song_count=embed_artist_track_counts.get(candidate_id, 0),
+            collab_liked_song_count=collaborator_counts.get(candidate_id, 0),
+            taste_name_match=artist_taste_text_match(
+                details.name,
+                liked_artist_name_list,
+                liked_song_artist_list,
+            ),
         )
         reason = artist_reason(
             candidate_name=details.name,

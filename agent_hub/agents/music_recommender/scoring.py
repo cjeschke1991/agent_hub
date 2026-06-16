@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 
 from agent_hub.core.config import MusicRecommenderWeights, MusicZoneWeights
@@ -224,6 +225,32 @@ def song_score(
     )
 
 
+def artist_taste_text_match(
+    candidate_name: str,
+    liked_artist_names: list[str],
+    liked_song_artists: list[str],
+) -> float:
+    """Match candidate artist name against liked artist/song metadata (0-100)."""
+    norm = " ".join(candidate_name.lower().split())
+    if not norm:
+        return 0.0
+    best = 0.0
+    for raw_name in liked_artist_names + liked_song_artists:
+        name = " ".join(raw_name.lower().split())
+        if not name:
+            continue
+        if norm == name:
+            best = max(best, 100.0)
+        elif norm in name or name in norm:
+            best = max(best, 70.0)
+        else:
+            for part in re.split(r"[,/&]|\bfeat\.?\b|\bfeaturing\b", name):
+                part = part.strip()
+                if part and (norm == part or norm in part or part in norm):
+                    best = max(best, 55.0)
+    return best
+
+
 def artist_score(
     candidate_genres: list[str],
     candidate_spotify_id: str,
@@ -237,21 +264,32 @@ def artist_score(
     weights: MusicRecommenderWeights,
     *,
     embed_liked_song_count: int = 0,
+    collab_liked_song_count: int = 0,
+    taste_name_match: float = 0.0,
 ) -> ArtistScoreBreakdown:
-    genre = _genre_overlap(candidate_genres, liked_genres, disliked_genres)
+    genre = max(
+        _genre_overlap(candidate_genres, liked_genres, disliked_genres),
+        taste_name_match,
+    )
 
     related_set = set(candidate_related_ids)
     overlap = len(related_set & liked_artist_ids)
     # embed_liked_song_count: # of embed top-tracks that belong to this artist
-    # (proxy for relatedness when the Web API related-artists endpoint is unavailable)
+    # collab_liked_song_count: # of liked/collab tracks the artist appears on
     related = max(
         min(100.0, overlap * 30.0),
         min(100.0, embed_liked_song_count * 25.0),
+        min(100.0, collab_liked_song_count * 30.0),
     )
 
     pop = min(100.0, float(candidate_popularity))
+    if pop == 0 and collab_liked_song_count > 0:
+        pop = min(100.0, 20.0 + collab_liked_song_count * 15.0)
 
-    era = 50.0
+    if genre > 0 or related > 0 or pop > 0:
+        era = min(100.0, 35.0 + collab_liked_song_count * 12.0 + embed_liked_song_count * 8.0)
+    else:
+        era = 0.0
 
     total = round(
         genre * weights.artist_genre

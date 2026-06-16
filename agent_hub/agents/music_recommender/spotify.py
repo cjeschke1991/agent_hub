@@ -668,29 +668,31 @@ def collect_collaborator_artist_candidates(
     seed_artist_ids: set[str],
     *,
     max_liked_track_lookups: int = 50,
-) -> list[str]:
-    """Discover collaborator artist IDs from track embed metadata.
+) -> dict[str, int]:
+    """Discover collaborator artist IDs and how often they appear on liked tracks.
 
     Spotify's public embed pages list every credited artist on a track. When the
     Web API related-artists endpoint is unavailable, collaborators on the user's
     liked songs and top-track cache are the best discovery signal available.
+
+    Returns a map of artist ID -> number of tracks that artist is credited on.
     """
     seeds = {aid for aid in seed_artist_ids if is_spotify_catalog_id(aid)}
-    seen = set(seeds)
-    results: list[str] = []
+    counts: dict[str, int] = {}
+    processed_tracks: set[str] = set()
 
     def add_collaborators(track_id: str) -> None:
-        if not is_spotify_catalog_id(track_id):
+        if not is_spotify_catalog_id(track_id) or track_id in processed_tracks:
             return
+        processed_tracks.add(track_id)
         try:
             artist_ids = fetch_track_artist_ids_from_embed(track_id)
         except SpotifyError:
             return
         for artist_id in artist_ids:
-            if artist_id in seeds or artist_id in seen:
+            if artist_id in seeds:
                 continue
-            seen.add(artist_id)
-            results.append(artist_id)
+            counts[artist_id] = counts.get(artist_id, 0) + 1
 
     liked_lookups = 0
     for song in liked_songs:
@@ -705,7 +707,7 @@ def collect_collaborator_artist_candidates(
         if artist_text_suggests_collaboration(track.artist):
             add_collaborators(track_id)
 
-    return results
+    return counts
 
 
 def fetch_new_release_candidates(

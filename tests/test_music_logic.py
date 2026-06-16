@@ -24,8 +24,13 @@ from agent_hub.agents.music_recommender.logic import (
     remove_artist_from_wishlist,
     remove_song_from_wishlist,
 )
+from agent_hub.agents.music_recommender.scoring import artist_score
 from agent_hub.agents.music_recommender.spotify import ArtistDetails, TrackDetails
-from agent_hub.core.config import HubConfig, SpotifyConfig
+from agent_hub.core.config import HubConfig, MusicRecommenderWeights, SpotifyConfig
+
+
+def _weights() -> MusicRecommenderWeights:
+    return MusicRecommenderWeights()
 
 
 @pytest.fixture
@@ -731,7 +736,38 @@ def test_collect_collaborator_artist_candidates_excludes_seed_artists():
     finally:
         spotify_mod.fetch_track_artist_ids_from_embed = original
 
-    assert candidates == ["guest-artist"]
+    assert candidates == {"guest-artist": 1}
+
+
+def test_artist_score_varies_by_collab_liked_song_count():
+    low = artist_score(
+        candidate_genres=[],
+        candidate_spotify_id="guest-1",
+        candidate_popularity=0,
+        candidate_related_ids=[],
+        liked_genres=set(),
+        disliked_genres=set(),
+        liked_artist_ids=set(),
+        year_min=1980,
+        year_max=2026,
+        weights=_weights(),
+        collab_liked_song_count=1,
+    )
+    high = artist_score(
+        candidate_genres=[],
+        candidate_spotify_id="guest-2",
+        candidate_popularity=0,
+        candidate_related_ids=[],
+        liked_genres=set(),
+        disliked_genres=set(),
+        liked_artist_ids=set(),
+        year_min=1980,
+        year_max=2026,
+        weights=_weights(),
+        collab_liked_song_count=4,
+    )
+    assert high.total > low.total
+    assert low.total != 7.5 or high.total != 7.5
 
 
 def test_is_collaboration_artist_name_detects_multi_artist_credits():
