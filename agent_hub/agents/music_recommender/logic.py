@@ -15,23 +15,32 @@ from agent_hub.agents.music_recommender.scoring import (
     SongScoreBreakdown,
     artist_score,
     song_score,
+    taste_text_similarity,
 )
 from agent_hub.agents.music_recommender.spotify import (
     ArtistDetails,
     SpotifyConfigError,
     SpotifyError,
     TrackDetails,
+    collect_embed_candidate_artists,
+    collect_embed_recommendation_tracks,
+    fetch_new_release_candidates,
     fetch_playlist_tracks_from_embed,
+    fetch_track_details_from_embed,
     get_available_genre_seeds,
     get_artist_details,
+    get_artist_details_with_fallback,
     get_artist_top_track_ids,
     get_related_artist_ids,
     get_spotify_recommendations,
     get_track_details,
+    get_track_details_with_fallback,
+    is_spotify_catalog_id,
     search_artists,
     search_tracks,
     search_tracks_by_genre,
     spotify_configured,
+    spotify_web_api_available,
 )
 from agent_hub.core.config import HubConfig, load_config
 from agent_hub.core.music_db import connect, init_db
@@ -143,6 +152,7 @@ class SongRecommendation:
     track: TrackDetails
     score: SongScoreBreakdown
     reason: str
+    zone: str = "safe"  # "safe" | "stretch" | "wild_card"
 
 
 @dataclass
@@ -166,6 +176,7 @@ class MusicRecommendFilters:
     valence_max: float = 1.0
     include_energy: bool = True
     include_valence: bool = True
+    include_year: bool = True
 
 
 def _row_to_taste_song(row: Any) -> TasteSong:
@@ -662,87 +673,126 @@ def recommend(
 
     taste_spotify_ids = {s.spotify_id for s in liked_songs + disliked_songs}
 
+    explicit_liked_artist_ids = {a.spotify_id for a in liked_artists}
+    liked_song_text = [(s.title, s.artist) for s in liked_songs]
+
     weights = config.music_recommender.weights
+    zone_cfg = config.music_recommender.zones
     explicit_genres = filters.genre_names or []
     search_genres = explicit_genres or sorted(liked_genres)[:3]
 
-    # --- Song candidates ---
-    candidate_track_ids: set[str] = set()
+    # -----------------------------------------------------------------------
+    # Zone 1 – SAFE: embed top-tracks from liked artists (familiar territory)
+    # Zone 2 – STRETCH: genre search + Spotify Web API candidates (new styles)
+    # Zone 3 – WILD CARD: new-release embed candidates (maximum novelty)
+    # -----------------------------------------------------------------------
+    embed_track_cache: dict[str, TrackDetails] = {}
 
-    # Spotify recs (may be unavailable for newer apps)
-    seed_track_ids = [s.spotify_id for s in liked_songs[:2]]
-    seed_artist_ids = [a.spotify_id for a in liked_artists[:3]]
+    # --- Zone 1 (Safe): embed top tracks from liked artists ---
+    safe_ids: set[str] = set()
+    embed_track_cache = collect_embed_recommendation_tracks(liked_songs, liked_artists)
+    safe_ids.update(embed_track_cache.keys())
+
+    # Enrich liked artist IDs from embed-resolved tracks for affinity scoring
+    for song in liked_songs:
+        if song.artist_id and is_spotify_catalog_id(song.artist_id):
+            liked_artist_ids.add(song.artist_id)
+        elif is_spotify_catalog_id(song.spotify_id):
+            cached = embed_track_cache.get(song.spotify_id)
+            if cached and cached.artist_id:
+                liked_artist_ids.add(cached.artist_id)
+
+    # --- Zone 2 (Stretch): Spotify Web API recs + genre search ---
+    stretch_ids: set[str] = set()
+
+    seed_track_ids = [
+        s.spotify_id for s in liked_songs if is_spotify_catalog_id(s.spotify_id)
+    ][:2]
+    seed_artist_ids_list = [
+        a.spotify_id for a in liked_artists if is_spotify_catalog_id(a.spotify_id)
+    ][:3]
     recs = get_spotify_recommendations(
         seed_track_ids=seed_track_ids or None,
-        seed_artist_ids=seed_artist_ids or None,
+        seed_artist_ids=seed_artist_ids_list or None,
         seed_genres=explicit_genres[:5] if explicit_genres else None,
         energy_min=(
-            filters.energy_min
-            if filters.include_energy and filters.energy_min > 0
-            else None
+            filters.energy_min if filters.include_energy and filters.energy_min > 0 else None
         ),
         energy_max=(
-            filters.energy_max
-            if filters.include_energy and filters.energy_max < 1
-            else None
+            filters.energy_max if filters.include_energy and filters.energy_max < 1 else None
         ),
         valence_min=(
-            filters.valence_min
-            if filters.include_valence and filters.valence_min > 0
-            else None
+            filters.valence_min if filters.include_valence and filters.valence_min > 0 else None
         ),
         valence_max=(
-            filters.valence_max
-            if filters.include_valence and filters.valence_max < 1
-            else None
+            filters.valence_max if filters.include_valence and filters.valence_max < 1 else None
         ),
         limit=50,
         config=config,
     )
-    candidate_track_ids.update(recs)
+    stretch_ids.update(recs)
 
-    # Top tracks from liked artists
     for artist in liked_artists[:5]:
+        if not is_spotify_catalog_id(artist.spotify_id):
+            continue
         top = get_artist_top_track_ids(artist.spotify_id, config=config)
-        candidate_track_ids.update(top[:5])
+        stretch_ids.update(top[:5])
     for song in liked_songs[:3]:
-        if song.artist_id:
+        if song.artist_id and is_spotify_catalog_id(song.artist_id):
             top = get_artist_top_track_ids(song.artist_id, config=config)
-            candidate_track_ids.update(top[:3])
+            stretch_ids.update(top[:3])
 
-    # Genre search fallback
     for genre in search_genres[:3]:
         ids = search_tracks_by_genre(genre, limit=10, config=config)
-        candidate_track_ids.update(ids)
+        stretch_ids.update(ids)
 
-    # Remove already-rated tracks
-    candidate_track_ids -= taste_spotify_ids
+    # Remove safe-zone tracks that are in stretch (they already got the safe treatment)
+    stretch_ids -= safe_ids
 
-    # Fetch details and score
-    scored_songs: list[SongRecommendation] = []
-    seen_track_ids: set[str] = set()
-    for track_id in list(candidate_track_ids)[:80]:
-        if track_id in seen_track_ids:
-            continue
-        seen_track_ids.add(track_id)
-        try:
-            details = get_track_details(track_id, config=config)
-        except SpotifyError:
-            continue
-        if details.year is not None and (
+    # --- Zone 3 (Wild Card): new releases embed ---
+    wild_tracks = fetch_new_release_candidates(limit=40)
+    wild_card_cache: dict[str, TrackDetails] = {t.spotify_id: t for t in wild_tracks}
+    wild_ids: set[str] = set(wild_card_cache.keys()) - safe_ids - stretch_ids
+
+    # --- Remove already-rated tracks from all zones ---
+    def _clean(ids: set[str]) -> set[str]:
+        return {tid for tid in ids - taste_spotify_ids if is_spotify_catalog_id(tid)}
+
+    safe_ids = _clean(safe_ids)
+    stretch_ids = _clean(stretch_ids)
+    wild_ids = _clean(wild_ids)
+
+    # -----------------------------------------------------------------------
+    # Score candidates per zone
+    # -----------------------------------------------------------------------
+    liked_artist_names = {a.name for a in liked_artists}
+
+    def _score_track(
+        track_id: str,
+        zone_name: str,
+        zone_weights_obj: Any,
+        seen: set[str],
+    ) -> SongRecommendation | None:
+        if track_id in seen:
+            return None
+        seen.add(track_id)
+        details = embed_track_cache.get(track_id) or wild_card_cache.get(track_id)
+        if details is None:
+            try:
+                details = get_track_details_with_fallback(track_id, config=config)
+            except SpotifyError:
+                return None
+        if filters.include_year and details.year is not None and (
             details.year < filters.year_min or details.year > filters.year_max
         ):
-            continue
+            return None
         if explicit_genres:
+            if not details.genres:
+                return None
             if not any(
                 g.lower() in {fg.lower() for fg in explicit_genres} for g in details.genres
             ):
-                continue
-        elif search_genres and not any(
-            g.lower() in {fg.lower() for fg in search_genres} for g in details.genres
-        ):
-            if liked_genres and not any(g.lower() in liked_genres for g in details.genres):
-                continue
+                return None
         scr = song_score(
             candidate_genres=details.genres,
             candidate_energy=details.energy,
@@ -764,6 +814,11 @@ def recommend(
             weights=weights,
             include_energy=filters.include_energy,
             include_valence=filters.include_valence,
+            include_year=filters.include_year,
+            taste_text_match=taste_text_similarity(details.title, details.artist, liked_song_text),
+            explicit_liked_artist_ids=explicit_liked_artist_ids,
+            source_rank=details.source_rank,
+            zone_weights=zone_weights_obj,
         )
         reason = song_reason(
             candidate_title=details.title,
@@ -775,27 +830,127 @@ def recommend(
             score=scr,
             liked_genres=liked_genres,
             disliked_genres=disliked_genres,
-            liked_artist_names={a.name for a in liked_artists},
+            liked_artist_names=liked_artist_names,
             candidate_artist_in_liked=details.artist_id in liked_artist_ids,
             include_energy=filters.include_energy,
             include_valence=filters.include_valence,
+            include_year=filters.include_year,
         )
-        scored_songs.append(SongRecommendation(track=details, score=scr, reason=reason))
+        return SongRecommendation(track=details, score=scr, reason=reason, zone=zone_name)
 
-    scored_songs.sort(key=lambda x: x.score.total, reverse=True)
-    top_songs = scored_songs[: filters.song_count]
+    seen_track_ids: set[str] = set()
+
+    safe_recs: list[SongRecommendation] = []
+    for tid in list(safe_ids)[:80]:
+        rec = _score_track(tid, "safe", zone_cfg.safe, seen_track_ids)
+        if rec:
+            safe_recs.append(rec)
+    safe_recs.sort(key=lambda x: x.score.total, reverse=True)
+
+    stretch_recs: list[SongRecommendation] = []
+    for tid in list(stretch_ids)[:80]:
+        rec = _score_track(tid, "stretch", zone_cfg.stretch, seen_track_ids)
+        if rec:
+            stretch_recs.append(rec)
+    stretch_recs.sort(key=lambda x: x.score.total, reverse=True)
+
+    wild_recs: list[SongRecommendation] = []
+    for tid in list(wild_ids)[:40]:
+        rec = _score_track(tid, "wild_card", zone_cfg.wild_card, seen_track_ids)
+        if rec:
+            wild_recs.append(rec)
+    wild_recs.sort(key=lambda x: x.score.total, reverse=True)
+
+    # -----------------------------------------------------------------------
+    # Merge zones: 40% Safe, 40% Stretch, 20% Wild Card — with backfill
+    # -----------------------------------------------------------------------
+    n = filters.song_count
+    n_safe = max(1, round(n * 0.40))
+    n_stretch = max(1, round(n * 0.40))
+    n_wild = max(0, n - n_safe - n_stretch)
+
+    def _take(pool: list[SongRecommendation], count: int) -> list[SongRecommendation]:
+        return pool[:count]
+
+    top_safe = _take(safe_recs, n_safe)
+    top_stretch = _take(stretch_recs, n_stretch)
+    top_wild = _take(wild_recs, n_wild)
+
+    # Backfill short zones from remaining pool items (preserve zone labels)
+    shortage = n - len(top_safe) - len(top_stretch) - len(top_wild)
+    if shortage > 0:
+        used_ids = {r.track.spotify_id for r in top_safe + top_stretch + top_wild}
+        backfill_pool = (
+            [r for r in safe_recs[n_safe:] if r.track.spotify_id not in used_ids]
+            + [r for r in stretch_recs[n_stretch:] if r.track.spotify_id not in used_ids]
+            + [r for r in wild_recs[n_wild:] if r.track.spotify_id not in used_ids]
+        )
+        backfill_pool.sort(key=lambda x: x.score.total, reverse=True)
+        top_safe += backfill_pool[:shortage]
+
+    top_songs = top_safe + top_stretch + top_wild
 
     # --- Artist candidates ---
     candidate_artist_ids: set[str] = set()
     taste_artist_ids_all = {a.spotify_id for a in liked_artists + disliked_artists}
-    song_artist_ids = {s.artist_id for s in liked_songs + disliked_songs if s.artist_id}
+
+    # Resolve artist IDs for liked songs that are missing them (embed fallback)
+    resolved_artist_ids: set[str] = set()
+    for song in liked_songs:
+        if song.artist_id and is_spotify_catalog_id(song.artist_id):
+            resolved_artist_ids.add(song.artist_id)
+        elif is_spotify_catalog_id(song.spotify_id):
+            cached = embed_track_cache.get(song.spotify_id)
+            if cached and cached.artist_id:
+                resolved_artist_ids.add(cached.artist_id)
+            else:
+                try:
+                    t = fetch_track_details_from_embed(song.spotify_id)
+                    if t.artist_id:
+                        resolved_artist_ids.add(t.artist_id)
+                except SpotifyError:
+                    pass
+
+    song_artist_ids = resolved_artist_ids | {
+        s.artist_id for s in liked_songs + disliked_songs if s.artist_id
+    }
 
     for artist in liked_artists[:5]:
         related = get_related_artist_ids(artist.spotify_id, config=config)
         candidate_artist_ids.update(related[:10])
 
+    # Use resolved artist IDs to find related artists
+    for artist_id in list(resolved_artist_ids)[:8]:
+        related = get_related_artist_ids(artist_id, config=config)
+        candidate_artist_ids.update(related[:8])
+
     candidate_artist_ids -= taste_artist_ids_all
     candidate_artist_ids -= song_artist_ids
+
+    # Fallback: when related-artist API is blocked (403), extract candidate
+    # artists directly from the embed track cache. Each track there was fetched
+    # from a liked artist's top-tracks page, so the artists that appear most
+    # frequently are the closest neighbors of the user's taste.
+    if not candidate_artist_ids:
+        # Build the embed cache on-demand if not already done during the song phase
+        if not embed_track_cache:
+            embed_track_cache = collect_embed_recommendation_tracks(
+                liked_songs,
+                liked_artists,
+            )
+        embed_candidates = collect_embed_candidate_artists(
+            embed_track_cache,
+            excluded_ids=taste_artist_ids_all | song_artist_ids,
+        )
+        candidate_artist_ids.update(embed_candidates)
+
+    # Count how many embed cache tracks belong to each candidate (relatedness proxy)
+    embed_artist_track_counts: dict[str, int] = {}
+    for track in embed_track_cache.values():
+        if track.artist_id:
+            embed_artist_track_counts[track.artist_id] = (
+                embed_artist_track_counts.get(track.artist_id, 0) + 1
+            )
 
     artist_related_map: dict[str, list[str]] = {}
     for candidate_id in list(candidate_artist_ids)[:40]:
@@ -809,13 +964,16 @@ def recommend(
             continue
         seen_artist_ids.add(candidate_id)
         try:
-            details = get_artist_details(candidate_id, config=config)
+            details = get_artist_details_with_fallback(candidate_id, config=config)
         except SpotifyError:
             continue
-        if explicit_genres and not any(
-            g.lower() in {fg.lower() for fg in explicit_genres} for g in details.genres
-        ):
-            continue
+        if explicit_genres:
+            if not details.genres:
+                continue
+            if not any(
+                g.lower() in {fg.lower() for fg in explicit_genres} for g in details.genres
+            ):
+                continue
         related_ids = artist_related_map.get(candidate_id, [])
         related_liked_count = len(set(related_ids) & liked_artist_ids)
         scr = artist_score(
@@ -829,6 +987,7 @@ def recommend(
             year_min=filters.year_min,
             year_max=filters.year_max,
             weights=weights,
+            embed_liked_song_count=embed_artist_track_counts.get(candidate_id, 0),
         )
         reason = artist_reason(
             candidate_name=details.name,

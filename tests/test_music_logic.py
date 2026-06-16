@@ -213,8 +213,20 @@ def test_recommend_filters_by_selected_genre(music_config, monkeypatch):
         lambda sid, config=None: catalog[sid],
     )
     monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_track_details_with_fallback",
+        lambda sid, config=None: catalog[sid],
+    )
+    monkeypatch.setattr(
         "agent_hub.agents.music_recommender.logic.get_artist_details",
         lambda sid, config=None: catalog[sid],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_artist_details_with_fallback",
+        lambda sid, config=None: catalog[sid],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.collect_embed_recommendation_tracks",
+        lambda *args, **kwargs: {},
     )
     monkeypatch.setattr(
         "agent_hub.agents.music_recommender.logic.get_spotify_recommendations",
@@ -267,8 +279,20 @@ def test_recommend_excludes_energy_from_spotify_filters(music_config, monkeypatc
         lambda sid, config=None: catalog[sid],
     )
     monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_track_details_with_fallback",
+        lambda sid, config=None: catalog[sid],
+    )
+    monkeypatch.setattr(
         "agent_hub.agents.music_recommender.logic.get_artist_details",
         lambda sid, config=None: catalog[sid],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_artist_details_with_fallback",
+        lambda sid, config=None: catalog[sid],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.collect_embed_recommendation_tracks",
+        lambda *args, **kwargs: {},
     )
     monkeypatch.setattr(
         "agent_hub.agents.music_recommender.logic.get_spotify_recommendations",
@@ -302,3 +326,141 @@ def test_recommend_excludes_energy_from_spotify_filters(music_config, monkeypatc
 
     assert captured.get("energy_min") is None
     assert captured.get("energy_max") is None
+
+
+def test_recommend_uses_embed_fallback_when_api_returns_no_candidates(
+    music_config, monkeypatch
+):
+    embed_track = TrackDetails(
+        spotify_id="embed-track",
+        title="Embed Song",
+        artist="Embed Artist",
+        artist_id="embed-artist",
+        album="",
+        year=2020,
+        genres=[],
+        energy=None,
+        valence=None,
+        danceability=None,
+        tempo=None,
+        popularity=0,
+        duration_ms=180000,
+        image_url=None,
+        preview_url=None,
+    )
+
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_spotify_recommendations",
+        lambda **kwargs: [],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_artist_top_track_ids",
+        lambda artist_id, config=None: [],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.search_tracks_by_genre",
+        lambda genre, limit=20, config=None: [],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_related_artist_ids",
+        lambda artist_id, config=None: [],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.collect_embed_recommendation_tracks",
+        lambda liked_songs, liked_artists, **kwargs: {"embed-track": embed_track},
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_track_details_with_fallback",
+        lambda sid, config=None: embed_track,
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_track_details",
+        lambda sid, config=None: _fake_track("seed"),
+    )
+
+    add_song("seed", "like", config=music_config)
+
+    songs, artists = recommend(
+        MusicRecommendFilters(song_count=5, artist_count=5),
+        config=music_config,
+    )
+
+    assert len(songs) == 1
+    assert songs[0].track.spotify_id == "embed-track"
+    assert artists == []
+
+
+def test_recommend_includes_out_of_range_year_when_year_excluded(music_config, monkeypatch):
+    old_track = TrackDetails(
+        spotify_id="old-track",
+        title="Old Song",
+        artist="Old Artist",
+        artist_id="old-artist",
+        album="",
+        year=1970,
+        genres=["rock"],
+        energy=0.5,
+        valence=0.5,
+        danceability=0.5,
+        tempo=100.0,
+        popularity=50,
+        duration_ms=180000,
+        image_url=None,
+        preview_url=None,
+    )
+    catalog = {
+        "seed": _fake_track("seed", artist_id="liked-artist"),
+        "old-track": old_track,
+        "liked-artist": _fake_artist("liked-artist"),
+    }
+
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_track_details",
+        lambda sid, config=None: catalog[sid],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_track_details_with_fallback",
+        lambda sid, config=None: catalog[sid],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_artist_details",
+        lambda sid, config=None: catalog[sid],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_artist_details_with_fallback",
+        lambda sid, config=None: catalog[sid],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_spotify_recommendations",
+        lambda **kwargs: ["old-track"],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_artist_top_track_ids",
+        lambda artist_id, config=None: [],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.search_tracks_by_genre",
+        lambda genre, limit=20, config=None: [],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_related_artist_ids",
+        lambda artist_id, config=None: [],
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.collect_embed_recommendation_tracks",
+        lambda *args, **kwargs: {},
+    )
+
+    add_song("seed", "like", config=music_config)
+
+    songs, _ = recommend(
+        MusicRecommendFilters(
+            year_min=1980,
+            year_max=2026,
+            include_year=False,
+            song_count=5,
+            artist_count=0,
+        ),
+        config=music_config,
+    )
+    assert {item.track.spotify_id for item in songs} == {"old-track"}

@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from agent_hub.core.config import MusicRecommenderWeights
+from agent_hub.core.config import MusicRecommenderWeights, MusicZoneWeights
 
 
 @dataclass
@@ -50,6 +50,32 @@ def _overlap_score(left: set[str], right: set[str]) -> float:
     if not left or not right:
         return 0.0
     return len(left & right) / len(left | right) * 100.0
+
+
+def taste_text_similarity(
+    title: str,
+    artist: str,
+    liked_songs: list[tuple[str, str]],
+) -> float:
+    """Match candidate title/artist against liked song metadata (0-100)."""
+    if not liked_songs:
+        return 0.0
+    title_n = title.lower().strip()
+    artist_parts = [a.strip().lower() for a in artist.split(",") if a.strip()]
+    best = 0.0
+    for liked_title, liked_artist in liked_songs:
+        lt = liked_title.lower().strip()
+        la = liked_artist.lower().strip()
+        if title_n and lt and (title_n == lt or title_n in lt or lt in title_n):
+            best = max(best, 100.0 if title_n == lt else 85.0)
+        if la and artist_parts:
+            if la in artist_parts or any(
+                part in la or la in part for part in artist_parts
+            ):
+                best = max(best, 70.0)
+            elif any(part in artist for part in la.split("&")):
+                best = max(best, 55.0)
+    return best
 
 
 def _genre_overlap(
@@ -116,8 +142,16 @@ def song_score(
     *,
     include_energy: bool = True,
     include_valence: bool = True,
+    include_year: bool = True,
+    taste_text_match: float = 0.0,
+    explicit_liked_artist_ids: set[str] | None = None,
+    source_rank: int | None = None,
+    zone_weights: MusicZoneWeights | None = None,
 ) -> SongScoreBreakdown:
-    genre = _genre_overlap(candidate_genres, liked_genres, disliked_genres)
+    genre = max(
+        _genre_overlap(candidate_genres, liked_genres, disliked_genres),
+        taste_text_match,
+    )
 
     audio = _audio_distance(
         candidate_energy,
@@ -130,33 +164,56 @@ def song_score(
         include_valence=include_valence,
     )
 
-    if candidate_artist_id and candidate_artist_id in liked_artist_ids:
+    explicit_ids = explicit_liked_artist_ids if explicit_liked_artist_ids is not None else liked_artist_ids
+    if candidate_artist_id and candidate_artist_id in explicit_ids:
         artist_affinity = 100.0
+    elif candidate_artist_id and candidate_artist_id in liked_artist_ids:
+        artist_affinity = 65.0
     elif candidate_artist_id and candidate_artist_id in related_artist_ids:
         artist_affinity = 60.0
     else:
         artist_affinity = 0.0
 
-    if candidate_year is None or candidate_year < year_min or candidate_year > year_max:
-        year = 0.0
-    elif liked_years:
-        avg_year = _avg([float(y) for y in liked_years])
-        distance = abs(candidate_year - avg_year)
-        span = max(year_max - year_min, 1)
-        year = 60.0 + max(0.0, 1.0 - distance / span) * 40.0
+    if include_year:
+        if candidate_year is None or candidate_year < year_min or candidate_year > year_max:
+            year = 0.0
+        elif liked_years:
+            avg_year = _avg([float(y) for y in liked_years])
+            distance = abs(candidate_year - avg_year)
+            span = max(year_max - year_min, 1)
+            year = 60.0 + max(0.0, 1.0 - distance / span) * 40.0
+        else:
+            year = 100.0
+        year_weight = zone_weights.song_year if zone_weights else weights.song_year
     else:
-        year = 100.0
+        year = 0.0
+        year_weight = 0.0
 
     pop = min(100.0, float(candidate_popularity))
+    if pop == 0 and source_rank is not None:
+        pop = max(15.0, 100.0 - source_rank * 8)
 
-    total = round(
-        genre * weights.song_genre
-        + audio * weights.song_audio_features
-        + artist_affinity * weights.song_artist_affinity
-        + year * weights.song_year
-        + pop * weights.song_popularity,
-        1,
+    w_genre = zone_weights.song_genre if zone_weights else weights.song_genre
+    w_audio = zone_weights.song_audio_features if zone_weights else weights.song_audio_features
+    w_affinity = zone_weights.song_artist_affinity if zone_weights else weights.song_artist_affinity
+    w_pop_raw = zone_weights.song_popularity if zone_weights else weights.song_popularity
+
+    # Negative popularity weight = anti-popularity bias (Wild Card zone).
+    # We invert the popularity score so lower popularity yields a higher contribution.
+    if w_pop_raw < 0:
+        pop_contrib = (100.0 - pop) * abs(w_pop_raw)
+    else:
+        pop_contrib = pop * w_pop_raw
+
+    total_raw = (
+        genre * w_genre
+        + audio * w_audio
+        + artist_affinity * w_affinity
+        + year * year_weight
+        + pop_contrib
     )
+    total = round(max(0.0, total_raw), 1)
+
     return SongScoreBreakdown(
         genre=genre,
         audio_features=audio,
@@ -178,12 +235,19 @@ def artist_score(
     year_min: int,
     year_max: int,
     weights: MusicRecommenderWeights,
+    *,
+    embed_liked_song_count: int = 0,
 ) -> ArtistScoreBreakdown:
     genre = _genre_overlap(candidate_genres, liked_genres, disliked_genres)
 
     related_set = set(candidate_related_ids)
     overlap = len(related_set & liked_artist_ids)
-    related = min(100.0, overlap * 30.0)
+    # embed_liked_song_count: # of embed top-tracks that belong to this artist
+    # (proxy for relatedness when the Web API related-artists endpoint is unavailable)
+    related = max(
+        min(100.0, overlap * 30.0),
+        min(100.0, embed_liked_song_count * 25.0),
+    )
 
     pop = min(100.0, float(candidate_popularity))
 

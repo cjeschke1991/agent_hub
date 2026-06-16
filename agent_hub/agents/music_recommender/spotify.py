@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -62,6 +63,7 @@ class TrackDetails:
     duration_ms: int | None
     image_url: str | None
     preview_url: str | None
+    source_rank: int | None = None
 
     def audio_features_display(self) -> dict[str, str]:
         result: dict[str, str] = {}
@@ -160,6 +162,39 @@ def _request(path: str, params: dict | None = None, config: HubConfig | None = N
 def spotify_configured(config: HubConfig | None = None) -> bool:
     config = config or load_config()
     return bool(config.spotify.client_id.strip() and config.spotify.client_secret.strip())
+
+
+def is_spotify_catalog_id(spotify_id: str) -> bool:
+    """True for real Spotify track/artist IDs (not synthetic pandora-* IDs)."""
+    return bool(spotify_id) and not spotify_id.startswith("pandora-")
+
+
+_web_api_available: bool | None = None
+
+
+def spotify_web_api_available(config: HubConfig | None = None, *, force_check: bool = False) -> bool:
+    """Whether authenticated Spotify Web API data endpoints respond (not 403-blocked)."""
+    global _web_api_available
+    if _web_api_available is not None and not force_check:
+        return _web_api_available
+    if not spotify_configured(config):
+        _web_api_available = False
+        return False
+    try:
+        _request("/search", {"q": "a", "type": "track", "limit": 1}, config=config)
+        _web_api_available = True
+    except SpotifyError as exc:
+        message = str(exc).lower()
+        if "403" in message or "premium" in message:
+            _web_api_available = False
+        else:
+            _web_api_available = True
+    return _web_api_available
+
+
+def reset_spotify_web_api_cache() -> None:
+    global _web_api_available
+    _web_api_available = None
 
 
 def _parse_image_url(images: list[dict]) -> str | None:
@@ -374,30 +409,321 @@ def parse_playlist_id(value: str) -> str:
     return value
 
 
-def fetch_playlist_tracks_from_embed(
-    playlist_id: str,
-    config: HubConfig | None = None,
-) -> list[TrackDetails]:
-    """Fetch public playlist tracks via Spotify embed page (no Premium API needed)."""
-    playlist_id = parse_playlist_id(playlist_id)
-    embed_url = f"https://open.spotify.com/embed/playlist/{playlist_id}"
+def _fetch_embed_next_data(embed_path: str) -> dict:
+    embed_url = f"https://open.spotify.com/embed/{embed_path.lstrip('/')}"
     request = urllib.request.Request(embed_url, headers={"User-Agent": "Mozilla/5.0"})
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             html = response.read().decode("utf-8", errors="replace")
     except urllib.error.URLError as exc:
-        raise SpotifyError(f"Could not fetch playlist embed page: {exc.reason}") from exc
-
-    import re
+        raise SpotifyError(f"Could not fetch Spotify embed page: {exc.reason}") from exc
 
     match = re.search(
         r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>',
         html,
     )
     if not match:
-        raise SpotifyError("Could not parse playlist data from Spotify embed page.")
+        raise SpotifyError("Could not parse Spotify embed page data.")
+    return json.loads(match.group(1))
 
-    payload = json.loads(match.group(1))
+
+def _track_details_from_embed_item(
+    item: dict,
+    *,
+    artist_id: str = "",
+    artist_name: str | None = None,
+    source_rank: int | None = None,
+) -> TrackDetails | None:
+    uri = str(item.get("uri") or "")
+    if not uri.startswith("spotify:track:"):
+        return None
+    spotify_id = uri.split(":", 2)[2]
+    preview = item.get("audioPreview") or {}
+    subtitle = str(item.get("subtitle") or artist_name or "Unknown")
+    return TrackDetails(
+        spotify_id=spotify_id,
+        title=str(item.get("title") or "Unknown"),
+        artist=subtitle,
+        artist_id=artist_id,
+        album="",
+        year=_year_from_date(item.get("releaseDate")),
+        genres=[],
+        energy=None,
+        valence=None,
+        danceability=None,
+        tempo=None,
+        popularity=0,
+        duration_ms=int(item["duration"]) if item.get("duration") else None,
+        image_url=None,
+        preview_url=preview.get("url"),
+        source_rank=source_rank,
+    )
+
+
+def fetch_track_details_from_embed(track_id: str) -> TrackDetails:
+    """Fetch track metadata from Spotify's public embed page."""
+    payload = _fetch_embed_next_data(f"track/{track_id}")
+    entity = (
+        payload.get("props", {})
+        .get("pageProps", {})
+        .get("state", {})
+        .get("data", {})
+        .get("entity", {})
+    )
+    artists = entity.get("artists") or []
+    artist_id = ""
+    artist_name = "Unknown"
+    if artists:
+        artist_name = str(artists[0].get("name") or "Unknown")
+        artist_uri = str(artists[0].get("uri") or "")
+        if artist_uri.startswith("spotify:artist:"):
+            artist_id = artist_uri.split(":", 2)[2]
+    details = _track_details_from_embed_item(
+        entity,
+        artist_id=artist_id,
+        artist_name=artist_name,
+    )
+    if not details:
+        raise SpotifyError(f"Could not parse track embed data for {track_id}.")
+    return details
+
+
+def fetch_artist_top_tracks_from_embed(
+    artist_id: str,
+    limit: int = 10,
+) -> list[TrackDetails]:
+    """Fetch an artist's top tracks from Spotify's public embed page."""
+    payload = _fetch_embed_next_data(f"artist/{artist_id}")
+    entity = (
+        payload.get("props", {})
+        .get("pageProps", {})
+        .get("state", {})
+        .get("data", {})
+        .get("entity", {})
+    )
+    track_list = entity.get("trackList") or []
+    tracks: list[TrackDetails] = []
+    for rank, item in enumerate(track_list[:limit]):
+        details = _track_details_from_embed_item(
+            item, artist_id=artist_id, source_rank=rank
+        )
+        if details:
+            tracks.append(details)
+    return tracks
+
+
+def fetch_artist_details_from_embed(artist_id: str) -> ArtistDetails:
+    """Fetch basic artist metadata from Spotify's public embed page."""
+    payload = _fetch_embed_next_data(f"artist/{artist_id}")
+    entity = (
+        payload.get("props", {})
+        .get("pageProps", {})
+        .get("state", {})
+        .get("data", {})
+        .get("entity", {})
+    )
+    images = (entity.get("visualIdentity") or {}).get("image") or []
+    return ArtistDetails(
+        spotify_id=str(entity.get("id") or artist_id),
+        name=str(entity.get("name") or entity.get("title") or "Unknown"),
+        genres=[],
+        popularity=0,
+        followers=0,
+        image_url=_parse_image_url(images),
+    )
+
+
+def get_track_details_with_fallback(
+    track_id: str,
+    config: HubConfig | None = None,
+) -> TrackDetails:
+    if not is_spotify_catalog_id(track_id):
+        raise SpotifyError(f"Not a Spotify track ID: {track_id}")
+    if spotify_web_api_available(config):
+        try:
+            return get_track_details(track_id, config=config)
+        except SpotifyError:
+            pass
+    return fetch_track_details_from_embed(track_id)
+
+
+def get_artist_details_with_fallback(
+    artist_id: str,
+    config: HubConfig | None = None,
+) -> ArtistDetails:
+    if not is_spotify_catalog_id(artist_id):
+        raise SpotifyError(f"Not a Spotify artist ID: {artist_id}")
+    if spotify_web_api_available(config):
+        try:
+            return get_artist_details(artist_id, config=config)
+        except SpotifyError:
+            pass
+    return fetch_artist_details_from_embed(artist_id)
+
+
+def collect_embed_recommendation_tracks(
+    liked_songs: list,
+    liked_artists: list,
+    *,
+    max_artists: int = 8,
+    tracks_per_artist: int = 10,
+) -> dict[str, TrackDetails]:
+    """Discover candidate tracks via public embed pages (no Web API needed)."""
+    results: dict[str, TrackDetails] = {}
+    artist_ids: list[str] = []
+
+    def add_artist_id(artist_id: str) -> None:
+        if is_spotify_catalog_id(artist_id) and artist_id not in artist_ids:
+            artist_ids.append(artist_id)
+
+    for artist in liked_artists[:max_artists]:
+        add_artist_id(artist.spotify_id)
+
+    for song in liked_songs:
+        if not is_spotify_catalog_id(song.spotify_id):
+            continue
+        if song.artist_id:
+            add_artist_id(song.artist_id)
+            continue
+        try:
+            details = fetch_track_details_from_embed(song.spotify_id)
+        except SpotifyError:
+            continue
+        if details.artist_id:
+            add_artist_id(details.artist_id)
+
+    for artist_id in artist_ids[:max_artists]:
+        try:
+            for track in fetch_artist_top_tracks_from_embed(
+                artist_id, limit=tracks_per_artist
+            ):
+                results[track.spotify_id] = track
+        except SpotifyError:
+            continue
+    return results
+
+
+def collect_embed_candidate_artists(
+    embed_track_cache: dict[str, "TrackDetails"],
+    excluded_ids: set[str] | None = None,
+) -> list[str]:
+    """Return unique artist IDs found in embed_track_cache, excluding given IDs.
+
+    The cache contains top tracks fetched from liked-artist pages, so an artist
+    that appears across many tracks is strongly associated with the user's taste.
+    """
+    seen: set[str] = set(excluded_ids or set())
+    result: list[str] = []
+    for track in embed_track_cache.values():
+        if (
+            track.artist_id
+            and is_spotify_catalog_id(track.artist_id)
+            and track.artist_id not in seen
+        ):
+            seen.add(track.artist_id)
+            result.append(track.artist_id)
+    return result
+
+
+def fetch_new_release_candidates(
+    *,
+    limit: int = 40,
+) -> list[TrackDetails]:
+    """Fetch recently-released tracks via Spotify's public new-releases embed page.
+
+    Falls back gracefully to an empty list when the embed structure changes or the
+    page is unavailable — the Wild Card zone is optional and should not break the
+    whole recommendation flow.
+    """
+    results: list[TrackDetails] = []
+    try:
+        payload = _fetch_embed_next_data("section/0JQ5DAqbMKFEC4WFtoNRpw")
+        sections = (
+            payload.get("props", {})
+            .get("pageProps", {})
+            .get("state", {})
+            .get("data", {})
+            .get("content", {})
+            .get("items", [])
+        )
+        for section in sections:
+            inner_items = section.get("data", {}).get("content", {}).get("items", [])
+            for item in inner_items:
+                item_type = (item.get("data") or {}).get("__typename", "")
+                if item_type == "Track":
+                    track = _track_details_from_embed_item(item.get("data", {}))
+                    if track:
+                        track = TrackDetails(
+                            spotify_id=track.spotify_id,
+                            title=track.title,
+                            artist=track.artist,
+                            artist_id=track.artist_id,
+                            album=track.album,
+                            year=track.year,
+                            genres=track.genres,
+                            popularity=track.popularity,
+                            energy=track.energy,
+                            valence=track.valence,
+                            danceability=track.danceability,
+                            image_url=track.image_url,
+                            preview_url=track.preview_url,
+                            source_rank=len(results),
+                        )
+                        results.append(track)
+                        if len(results) >= limit:
+                            return results
+                elif item_type in ("Album", "Playlist"):
+                    album_id = (item.get("data") or {}).get("id") or (
+                        (item.get("data") or {}).get("uri") or ""
+                    ).split(":")[-1]
+                    if not album_id or not is_spotify_catalog_id(album_id):
+                        continue
+                    try:
+                        entity_key = "album" if item_type == "Album" else "playlist"
+                        embed_tracks = fetch_artist_top_tracks_from_embed(album_id) if False else []
+                        _ = embed_tracks
+                        if item_type == "Playlist":
+                            embed_tracks = fetch_playlist_tracks_from_embed(album_id)
+                        elif item_type == "Album":
+                            album_payload = _fetch_embed_next_data(f"album/{album_id}")
+                            track_list = (
+                                album_payload.get("props", {})
+                                .get("pageProps", {})
+                                .get("state", {})
+                                .get("data", {})
+                                .get("entity", {})
+                                .get("trackList", [])
+                            )
+                            embed_tracks = [
+                                t for item2 in track_list
+                                if (t := _track_details_from_embed_item(item2)) is not None
+                            ]
+                        for t in embed_tracks[:3]:
+                            t2 = TrackDetails(
+                                spotify_id=t.spotify_id, title=t.title, artist=t.artist,
+                                artist_id=t.artist_id, album=t.album, year=t.year,
+                                genres=t.genres, popularity=t.popularity, energy=t.energy,
+                                valence=t.valence, danceability=t.danceability,
+                                image_url=t.image_url, preview_url=t.preview_url,
+                                source_rank=len(results),
+                            )
+                            results.append(t2)
+                            if len(results) >= limit:
+                                return results
+                    except SpotifyError:
+                        continue
+    except Exception:  # noqa: BLE001
+        pass
+    return results
+
+
+def fetch_playlist_tracks_from_embed(
+    playlist_id: str,
+    config: HubConfig | None = None,
+) -> list[TrackDetails]:
+    """Fetch public playlist tracks via Spotify embed page (no Premium API needed)."""
+    playlist_id = parse_playlist_id(playlist_id)
+    payload = _fetch_embed_next_data(f"playlist/{playlist_id}")
     track_list = (
         payload.get("props", {})
         .get("pageProps", {})
@@ -411,29 +737,8 @@ def fetch_playlist_tracks_from_embed(
 
     tracks: list[TrackDetails] = []
     for item in track_list:
-        uri = str(item.get("uri") or "")
-        if not uri.startswith("spotify:track:"):
-            continue
-        spotify_id = uri.split(":", 2)[2]
-        preview = item.get("audioPreview") or {}
-        tracks.append(
-            TrackDetails(
-                spotify_id=spotify_id,
-                title=str(item.get("title") or "Unknown"),
-                artist=str(item.get("subtitle") or "Unknown"),
-                artist_id="",
-                album="",
-                year=None,
-                genres=[],
-                energy=None,
-                valence=None,
-                danceability=None,
-                tempo=None,
-                popularity=0,
-                duration_ms=int(item["duration"]) if item.get("duration") else None,
-                image_url=None,
-                preview_url=preview.get("url"),
-            )
-        )
+        details = _track_details_from_embed_item(item)
+        if details:
+            tracks.append(details)
     return tracks
 

@@ -59,8 +59,44 @@ class MusicRecommenderWeights:
 
 
 @dataclass
+class MusicZoneWeights:
+    """Per-zone scoring weights for the three discovery zones."""
+    song_genre: float
+    song_audio_features: float
+    song_artist_affinity: float
+    song_year: float
+    song_popularity: float  # negative = anti-popularity bias
+
+
+@dataclass
+class MusicZoneConfig:
+    safe: MusicZoneWeights = field(default_factory=lambda: MusicZoneWeights(
+        song_genre=0.20,
+        song_audio_features=0.25,
+        song_artist_affinity=0.35,
+        song_year=0.10,
+        song_popularity=0.10,
+    ))
+    stretch: MusicZoneWeights = field(default_factory=lambda: MusicZoneWeights(
+        song_genre=0.45,
+        song_audio_features=0.30,
+        song_artist_affinity=0.00,
+        song_year=0.10,
+        song_popularity=0.15,
+    ))
+    wild_card: MusicZoneWeights = field(default_factory=lambda: MusicZoneWeights(
+        song_genre=0.20,
+        song_audio_features=0.25,
+        song_artist_affinity=0.00,
+        song_year=0.05,
+        song_popularity=-0.15,
+    ))
+
+
+@dataclass
 class MusicRecommenderConfig:
     weights: MusicRecommenderWeights = field(default_factory=MusicRecommenderWeights)
+    zones: MusicZoneConfig = field(default_factory=MusicZoneConfig)
 
 
 @dataclass
@@ -95,6 +131,18 @@ def _load_dotenv() -> None:
             os.environ[key] = value
 
 
+def _load_zone_weights(raw: dict[str, Any], default: "MusicZoneWeights") -> "MusicZoneWeights":
+    if not raw:
+        return default
+    return MusicZoneWeights(
+        song_genre=float(raw.get("song_genre", default.song_genre)),
+        song_audio_features=float(raw.get("song_audio_features", default.song_audio_features)),
+        song_artist_affinity=float(raw.get("song_artist_affinity", default.song_artist_affinity)),
+        song_year=float(raw.get("song_year", default.song_year)),
+        song_popularity=float(raw.get("song_popularity", default.song_popularity)),
+    )
+
+
 def load_config(config_path: Path | None = None) -> HubConfig:
     _load_dotenv()
     path = config_path or (PROJECT_ROOT / "config.yaml")
@@ -111,6 +159,7 @@ def load_config(config_path: Path | None = None) -> HubConfig:
     spotify_raw = raw.get("spotify", {}) or {}
     music_raw = raw.get("music_recommender", {}) or {}
     mweights_raw = music_raw.get("weights", {}) or {}
+    mzones_raw = music_raw.get("zones", {}) or {}
 
     api_key = os.environ.get("TMDB_API_KEY") or str(tmdb_raw.get("api_key", "") or "")
     omdb_api_key = os.environ.get("OMDB_API_KEY") or str(omdb_raw.get("api_key", "") or "")
@@ -150,6 +199,20 @@ def load_config(config_path: Path | None = None) -> HubConfig:
                 artist_related_artists=float(mweights_raw.get("artist_related_artists", 0.25)),
                 artist_popularity=float(mweights_raw.get("artist_popularity", 0.20)),
                 artist_era=float(mweights_raw.get("artist_era", 0.15)),
-            )
+            ),
+            zones=MusicZoneConfig(
+                safe=_load_zone_weights(mzones_raw.get("safe", {}), MusicZoneWeights(
+                    song_genre=0.20, song_audio_features=0.25, song_artist_affinity=0.35,
+                    song_year=0.10, song_popularity=0.10,
+                )),
+                stretch=_load_zone_weights(mzones_raw.get("stretch", {}), MusicZoneWeights(
+                    song_genre=0.45, song_audio_features=0.30, song_artist_affinity=0.00,
+                    song_year=0.10, song_popularity=0.15,
+                )),
+                wild_card=_load_zone_weights(mzones_raw.get("wild_card", {}), MusicZoneWeights(
+                    song_genre=0.20, song_audio_features=0.25, song_artist_affinity=0.00,
+                    song_year=0.05, song_popularity=-0.15,
+                )),
+            ),
         ),
     )

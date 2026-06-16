@@ -30,6 +30,7 @@ from agent_hub.agents.music_recommender.spotify import (
     SpotifyConfigError,
     SpotifyError,
     spotify_configured,
+    spotify_web_api_available,
 )
 from agent_hub.core.config import load_config
 
@@ -51,6 +52,7 @@ def _init_session_state() -> None:
         "music_valence_range": (0.0, 1.0),
         "music_include_energy": True,
         "music_include_valence": True,
+        "music_include_year": True,
         "music_recs_status": None,
     }
     for key, value in defaults.items():
@@ -375,12 +377,21 @@ def _render_recommendations() -> None:
     liked_artists = list_liked_artists()
     has_taste = bool(liked_songs or liked_artists)
 
-    year_min, year_max = st.slider(
-        "Release years",
-        min_value=1950,
-        max_value=2030,
-        key="music_year_range",
-    )
+    year_col, year_toggle_col = st.columns([5, 1])
+    with year_toggle_col:
+        include_year = st.toggle(
+            "Include",
+            key="music_include_year",
+            help="When off, release year is ignored for filtering and scoring.",
+        )
+    with year_col:
+        year_min, year_max = st.slider(
+            "Release years",
+            min_value=1950,
+            max_value=2030,
+            key="music_year_range",
+            disabled=not include_year,
+        )
 
     genre_options: list[str] = []
     if spotify_configured():
@@ -486,6 +497,7 @@ def _render_recommendations() -> None:
             valence_max=valence_max,
             include_energy=include_energy,
             include_valence=include_valence,
+            include_year=include_year,
         )
         st.rerun()
 
@@ -497,11 +509,25 @@ def _render_recommendations() -> None:
             st.session_state.music_song_recs = songs
             st.session_state.music_artist_recs = artists
             if not songs and not artists:
-                st.session_state.music_recs_status = (
-                    "warning",
-                    "No songs or artists matched your filters. Try widening the year range, "
-                    "clearing genre filters, or adding more liked music.",
-                )
+                if selected_genres:
+                    st.session_state.music_recs_status = (
+                        "warning",
+                        "No songs matched your filters. Embed-based discovery does not include "
+                        "genre tags — clear the **Genres** filter and try again.",
+                    )
+                elif not spotify_web_api_available():
+                    st.session_state.music_recs_status = (
+                        "warning",
+                        "No recommendations found. Spotify's Web API is blocked for this developer "
+                        "account, so results come from public embed pages. Add liked songs with "
+                        "real Spotify IDs (via search or playlist import) for best results.",
+                    )
+                else:
+                    st.session_state.music_recs_status = (
+                        "warning",
+                        "No songs or artists matched your filters. Try widening the year range, "
+                        "clearing genre filters, or adding more liked music.",
+                    )
             else:
                 st.session_state.music_recs_status = None
         except (SpotifyConfigError, MusicRecommendationError, MusicValidationError, SpotifyError) as exc:
@@ -541,6 +567,12 @@ def _render_recommendations() -> None:
     wishlist_song_ids = {s.spotify_id for s in list_wishlist_songs()}
     wishlist_artist_ids = {a.spotify_id for a in list_wishlist_artists()}
 
+    _ZONE_BADGE: dict[str, str] = {
+        "safe": "🟢 Safe",
+        "stretch": "🟡 Stretch",
+        "wild_card": "🔴 Wild Card",
+    }
+
     if song_recs:
         st.markdown("### Songs")
         for idx, item in enumerate(song_recs, start=1):
@@ -550,9 +582,10 @@ def _render_recommendations() -> None:
                     st.image(item.track.image_url, use_container_width=True)
             with cols[1]:
                 year = item.track.year or "—"
+                zone_label = _ZONE_BADGE.get(getattr(item, "zone", "safe"), "🟢 Safe")
                 st.markdown(
                     f"**#{idx} {item.track.title}** — {item.track.artist} ({year}) "
-                    f"— **Score: {item.score.total}**"
+                    f"— **Score: {item.score.total}** &nbsp; `{zone_label}`"
                 )
                 st.info(item.reason)
                 genres = ", ".join(item.track.genres[:4]) if item.track.genres else "—"

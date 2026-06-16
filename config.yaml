@@ -44,3 +44,27 @@ music_recommender:
     artist_related_artists: 0.25
     artist_popularity: 0.20
     artist_era: 0.15
+
+  # Exploration Zones — per-zone scoring weight profiles.
+  # safe      (40%): familiar artists, artist-affinity heavy
+  # stretch   (40%): similar genres/audio, no artist affinity bias
+  # wild_card (20%): novelty focus; negative song_popularity = anti-popularity bias
+  zones:
+    safe:
+      song_genre: 0.20
+      song_audio_features: 0.25
+      song_artist_affinity: 0.35
+      song_year: 0.10
+      song_popularity: 0.10
+    stretch:
+      song_genre: 0.45
+      song_audio_features: 0.30
+      song_artist_affinity: 0.00
+      song_year: 0.10
+      song_popularity: 0.15
+    wild_card:
+      song_genre: 0.20
+      song_audio_features: 0.25
+      song_artist_affinity: 0.00
+      song_year: 0.05
+      song_popularity: -0.15

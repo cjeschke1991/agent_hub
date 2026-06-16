@@ -27,6 +27,7 @@ def song_reason(
     *,
     include_energy: bool = True,
     include_valence: bool = True,
+    include_year: bool = True,
 ) -> str:
     parts: list[str] = []
     shared_genres = sorted(set(g for g in candidate_genres if g.lower() in liked_genres))
@@ -54,7 +55,7 @@ def song_reason(
         if descriptors:
             parts.append(f"its {' and '.join(descriptors)} vibe fits your taste")
 
-    if score.year >= 70 and candidate_year:
+    if include_year and score.year >= 70 and candidate_year:
         parts.append(f"its {candidate_year} release sits in the era you tend to favor")
 
     if not (set(g.lower() for g in candidate_genres) & disliked_genres) and disliked_genres:
