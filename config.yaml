@@ -27,3 +27,20 @@ movie_recommender:
     year: 0.15
     rating: 0.15
     keywords: 0.10
+
+# Optional: set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in your environment instead.
+spotify:
+  client_id: ""
+  client_secret: ""
+
+music_recommender:
+  weights:
+    song_genre: 0.30
+    song_audio_features: 0.25
+    song_artist_affinity: 0.20
+    song_year: 0.15
+    song_popularity: 0.10
+    artist_genre: 0.40
+    artist_related_artists: 0.25
+    artist_popularity: 0.20
+    artist_era: 0.15

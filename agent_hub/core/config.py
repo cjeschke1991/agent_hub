@@ -40,6 +40,30 @@ class MovieRecommenderConfig:
 
 
 @dataclass
+class SpotifyConfig:
+    client_id: str = ""
+    client_secret: str = ""
+
+
+@dataclass
+class MusicRecommenderWeights:
+    song_genre: float = 0.30
+    song_audio_features: float = 0.25
+    song_artist_affinity: float = 0.20
+    song_year: float = 0.15
+    song_popularity: float = 0.10
+    artist_genre: float = 0.40
+    artist_related_artists: float = 0.25
+    artist_popularity: float = 0.20
+    artist_era: float = 0.15
+
+
+@dataclass
+class MusicRecommenderConfig:
+    weights: MusicRecommenderWeights = field(default_factory=MusicRecommenderWeights)
+
+
+@dataclass
 class HubConfig:
     data_dir: Path
     slice_order: list[str] = field(default_factory=list)
@@ -48,6 +72,8 @@ class HubConfig:
     tmdb: TmdbConfig = field(default_factory=TmdbConfig)
     omdb: OmdbConfig = field(default_factory=OmdbConfig)
     movie_recommender: MovieRecommenderConfig = field(default_factory=MovieRecommenderConfig)
+    spotify: SpotifyConfig = field(default_factory=SpotifyConfig)
+    music_recommender: MusicRecommenderConfig = field(default_factory=MusicRecommenderConfig)
 
     def stale_threshold_hours(self, agent_id: str) -> float:
         default = self.stale_hours.get("default", 36)
@@ -82,9 +108,16 @@ def load_config(config_path: Path | None = None) -> HubConfig:
     omdb_raw = raw.get("omdb", {}) or {}
     movie_raw = raw.get("movie_recommender", {}) or {}
     weights_raw = movie_raw.get("weights", {}) or {}
+    spotify_raw = raw.get("spotify", {}) or {}
+    music_raw = raw.get("music_recommender", {}) or {}
+    mweights_raw = music_raw.get("weights", {}) or {}
 
     api_key = os.environ.get("TMDB_API_KEY") or str(tmdb_raw.get("api_key", "") or "")
     omdb_api_key = os.environ.get("OMDB_API_KEY") or str(omdb_raw.get("api_key", "") or "")
+    spotify_client_id = os.environ.get("SPOTIFY_CLIENT_ID") or str(spotify_raw.get("client_id", "") or "")
+    spotify_client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET") or str(
+        spotify_raw.get("client_secret", "") or ""
+    )
 
     return HubConfig(
         data_dir=resolve_data_dir(raw.get("data_dir", "data")),
@@ -100,6 +133,23 @@ def load_config(config_path: Path | None = None) -> HubConfig:
                 year=float(weights_raw.get("year", 0.15)),
                 rating=float(weights_raw.get("rating", 0.15)),
                 keywords=float(weights_raw.get("keywords", 0.10)),
+            )
+        ),
+        spotify=SpotifyConfig(
+            client_id=spotify_client_id.strip(),
+            client_secret=spotify_client_secret.strip(),
+        ),
+        music_recommender=MusicRecommenderConfig(
+            weights=MusicRecommenderWeights(
+                song_genre=float(mweights_raw.get("song_genre", 0.30)),
+                song_audio_features=float(mweights_raw.get("song_audio_features", 0.25)),
+                song_artist_affinity=float(mweights_raw.get("song_artist_affinity", 0.20)),
+                song_year=float(mweights_raw.get("song_year", 0.15)),
+                song_popularity=float(mweights_raw.get("song_popularity", 0.10)),
+                artist_genre=float(mweights_raw.get("artist_genre", 0.40)),
+                artist_related_artists=float(mweights_raw.get("artist_related_artists", 0.25)),
+                artist_popularity=float(mweights_raw.get("artist_popularity", 0.20)),
+                artist_era=float(mweights_raw.get("artist_era", 0.15)),
             )
         ),
     )
