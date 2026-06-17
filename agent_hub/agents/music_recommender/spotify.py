@@ -89,6 +89,7 @@ class ArtistDetails:
 
 
 _token_cache: dict[str, object] = {"token": "", "expires_at": 0.0}
+_genre_lookup_cache: dict[str, list[str]] = {}
 
 
 def _client_credentials(config: HubConfig | None = None) -> tuple[str, str]:
@@ -677,24 +678,32 @@ def get_artist_genres_with_fallback(
     limit: int = 8,
 ) -> list[str]:
     """Return Spotify artist genres, falling back to MusicBrainz tags when needed."""
+    cache_key = f"{artist_id}|{artist_name.lower().strip()}"
+    if cache_key in _genre_lookup_cache:
+        return list(_genre_lookup_cache[cache_key])
+
+    genres: list[str] = []
     if is_spotify_catalog_id(artist_id):
         if spotify_web_api_available(config):
             try:
                 details = get_artist_details(artist_id, config=config)
                 if details.genres:
-                    return details.genres[:limit]
+                    genres = details.genres[:limit]
             except SpotifyError:
                 pass
-        try:
-            details = get_artist_details_with_fallback(artist_id, config=config)
-            if details.genres:
-                return details.genres[:limit]
-            artist_name = artist_name or details.name
-        except SpotifyError:
-            pass
-    if artist_name:
-        return fetch_artist_genres_from_musicbrainz(artist_name, limit=limit)
-    return []
+        if not genres:
+            try:
+                details = get_artist_details_with_fallback(artist_id, config=config)
+                if details.genres:
+                    genres = details.genres[:limit]
+                artist_name = artist_name or details.name
+            except SpotifyError:
+                pass
+    if not genres and artist_name:
+        genres = fetch_artist_genres_from_musicbrainz(artist_name, limit=limit)
+
+    _genre_lookup_cache[cache_key] = genres
+    return genres
 
 
 def collect_embed_recommendation_tracks(

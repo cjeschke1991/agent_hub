@@ -21,6 +21,8 @@ from agent_hub.agents.music_recommender.logic import (
     list_wishlist_songs,
     recommend,
     refresh_artist_top_tracks,
+    resolve_display_genres,
+    resolve_track_genres,
     remove_artist,
     remove_artist_from_wishlist,
     remove_song,
@@ -612,6 +614,9 @@ def _render_recommendations() -> None:
     liked_artist_ids = {a.spotify_id for a in list_liked_artists() if a.spotify_id}
     disliked_artist_ids = {a.spotify_id for a in list_disliked_artists() if a.spotify_id}
 
+    liked_artists_for_genres = list_liked_artists()
+    genre_cache: dict[str, list[str]] = {}
+
     _ZONE_BADGE: dict[str, str] = {
         "safe": "🟢 Safe",
         "stretch": "🟡 Stretch",
@@ -633,7 +638,13 @@ def _render_recommendations() -> None:
                     f"— **Score: {item.score.total}** &nbsp; `{zone_label}`"
                 )
                 st.info(item.reason)
-                _render_genres_caption(item.track.genres)
+                _render_genres_caption(
+                    resolve_track_genres(
+                        item.track,
+                        genre_cache=genre_cache,
+                        liked_artists=liked_artists_for_genres,
+                    )
+                )
                 af = item.track.audio_features_display()
                 if af:
                     st.markdown("  ".join(f"**{k}:** {v}" for k, v in af.items()))
@@ -686,8 +697,15 @@ def _render_recommendations() -> None:
                     f"**#{idx} {item.artist.name}** — **Score: {item.score.total}**"
                 )
                 st.info(item.reason)
-                genres = ", ".join(item.artist.genres[:4]) if item.artist.genres else "—"
-                st.markdown(f"**Genres:** {genres}")
+                _render_genres_caption(
+                    resolve_display_genres(
+                        item.artist.spotify_id,
+                        item.artist.name,
+                        existing_genres=item.artist.genres,
+                        genre_cache=genre_cache,
+                        liked_artists=liked_artists_for_genres,
+                    )
+                )
                 if item.artist.followers:
                     st.markdown(f"**Followers:** {item.artist.followers:,}")
                 breakdown = " · ".join(

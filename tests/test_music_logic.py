@@ -674,6 +674,58 @@ def test_refresh_taste_artist_genres(music_config, monkeypatch):
     assert list_liked_artists(music_config)[0].genres == ["rock", "jam band"]
 
 
+def test_primary_artist_name_splits_unicode_collaborators():
+    from agent_hub.agents.music_recommender.logic import (
+        _collaborator_names,
+        _primary_artist_name,
+    )
+
+    assert _primary_artist_name("ayokay\u202fQuinn XCII") == "ayokay"
+    assert _collaborator_names("Andy Frasco & The U.N., Susto") == [
+        "Andy Frasco & The U.N.",
+        "Susto",
+    ]
+
+
+def test_resolve_track_genres_uses_other_collaborators(music_config, monkeypatch):
+    from agent_hub.agents.music_recommender.logic import resolve_track_genres
+
+    track = TrackDetails(
+        spotify_id="track-collab",
+        title="Kings of Summer",
+        artist="ayokay\u202fQuinn XCII",
+        artist_id="ayokay-id",
+        album="",
+        year=2017,
+        genres=[],
+        energy=None,
+        valence=None,
+        danceability=None,
+        tempo=None,
+        popularity=0,
+        duration_ms=None,
+        image_url=None,
+        preview_url=None,
+    )
+
+    def fake_genres(artist_id, artist_name="", config=None, limit=8):
+        if artist_id == "quinn-id" or artist_name == "Quinn XCII":
+            return ["electropop"]
+        return []
+
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_artist_genres_with_fallback",
+        fake_genres,
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.fetch_track_artist_ids_from_embed",
+        lambda track_id: ["ayokay-id", "quinn-id"],
+    )
+
+    genres = resolve_track_genres(track, config=music_config)
+    assert genres == ["electropop"]
+
+
 def test_link_missing_liked_artist_spotify_ids_from_siblings(music_config):
     from agent_hub.agents.music_recommender.logic import (
         link_missing_liked_artist_spotify_ids,

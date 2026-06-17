@@ -30,6 +30,7 @@ from agent_hub.agents.music_recommender.spotify import (
     fetch_artist_top_tracks_from_embed,
     fetch_new_release_candidates,
     fetch_playlist_tracks_from_embed,
+    fetch_track_artist_ids_from_embed,
     fetch_track_details_from_embed,
     get_available_genre_seeds,
     get_artist_genres_with_fallback,
@@ -460,6 +461,22 @@ def update_taste_song_genres(
         )
 
 
+def _normalize_artist_display(name: str) -> str:
+    return name.replace("\u202f", ",").replace("\u00a0", " ").strip()
+
+
+def _collaborator_names(artist_name: str) -> list[str]:
+    normalized = _normalize_artist_display(artist_name)
+    if not normalized:
+        return []
+    return [part.strip() for part in normalized.split(",") if part.strip()]
+
+
+def _primary_artist_name(artist_name: str) -> str:
+    names = _collaborator_names(artist_name)
+    return names[0] if names else ""
+
+
 def _genres_from_liked_artist_match(
     artist_name: str,
     liked_artists: list[TasteArtist],
@@ -470,17 +487,19 @@ def _genres_from_liked_artist_match(
             cleaned = cleaned[4:]
         return cleaned
 
-    target = normalize(artist_name)
-    for liked in liked_artists:
-        if not liked.genres:
-            continue
-        liked_name = normalize(liked.name)
-        if (
-            target == liked_name
-            or target in liked_name
-            or liked_name in target
-        ):
-            return list(liked.genres)
+    candidates = _collaborator_names(artist_name) or ([artist_name] if artist_name else [])
+    for candidate in candidates:
+        target = normalize(candidate)
+        for liked in liked_artists:
+            if not liked.genres:
+                continue
+            liked_name = normalize(liked.name)
+            if (
+                target == liked_name
+                or target in liked_name
+                or liked_name in target
+            ):
+                return list(liked.genres)
     return []
 
 
@@ -625,6 +644,134 @@ def _track_with_genres(track: TrackDetails, genres: list[str]) -> TrackDetails:
         duration_ms=track.duration_ms,
         image_url=track.image_url,
         preview_url=track.preview_url,
+        source_rank=track.source_rank,
+    )
+
+
+def _artist_with_genres(artist: ArtistDetails, genres: list[str]) -> ArtistDetails:
+    if not genres or artist.genres:
+        return artist
+    return ArtistDetails(
+        spotify_id=artist.spotify_id,
+        name=artist.name,
+        genres=genres,
+        popularity=artist.popularity,
+        followers=artist.followers,
+        image_url=artist.image_url,
+    )
+
+
+def resolve_track_genres(
+    track: TrackDetails,
+    config: HubConfig | None = None,
+    *,
+    genre_cache: dict[str, list[str]] | None = None,
+    liked_artists: list[TasteArtist] | None = None,
+) -> list[str]:
+    """Resolve genres for a track from stored tags, artist IDs, or collaborators."""
+    if track.genres:
+        return list(track.genres)
+
+    track = _ensure_track_artist_id(track, config=config)
+    liked_artists = liked_artists if liked_artists is not None else list_liked_artists(config)
+    cache = genre_cache if genre_cache is not None else {}
+
+    primary = _primary_artist_name(track.artist) or track.artist
+    genres = _resolve_item_genres(
+        artist_id=track.artist_id,
+        artist_name=primary,
+        existing_genres=[],
+        config=config,
+        liked_artists=liked_artists,
+        cache=cache,
+    )
+    if genres:
+        return genres
+
+    if is_spotify_catalog_id(track.spotify_id):
+        try:
+            artist_ids = fetch_track_artist_ids_from_embed(track.spotify_id)
+        except SpotifyError:
+            artist_ids = []
+        for artist_id in artist_ids:
+            if artist_id == track.artist_id:
+                continue
+            genres = _resolve_item_genres(
+                artist_id=artist_id,
+                artist_name="",
+                existing_genres=[],
+                config=config,
+                liked_artists=liked_artists,
+                cache=cache,
+            )
+            if genres:
+                return genres
+
+    for name in _collaborator_names(track.artist):
+        if name == primary:
+            continue
+        genres = _resolve_item_genres(
+            artist_id="",
+            artist_name=name,
+            existing_genres=[],
+            config=config,
+            liked_artists=liked_artists,
+            cache=cache,
+        )
+        if genres:
+            return genres
+    return []
+
+
+def resolve_display_genres(
+    artist_id: str,
+    artist_name: str,
+    config: HubConfig | None = None,
+    *,
+    existing_genres: list[str] | None = None,
+    genre_cache: dict[str, list[str]] | None = None,
+    liked_artists: list[TasteArtist] | None = None,
+) -> list[str]:
+    """Resolve Spotify-style genres for display, using liked-artist matches and lookups."""
+    if existing_genres:
+        return list(existing_genres)
+    primary_name = _primary_artist_name(artist_name) or artist_name
+    liked_artists = liked_artists if liked_artists is not None else list_liked_artists(config)
+    return _resolve_item_genres(
+        artist_id=artist_id,
+        artist_name=primary_name,
+        existing_genres=[],
+        config=config,
+        liked_artists=liked_artists,
+        cache=genre_cache if genre_cache is not None else {},
+    )
+
+
+def _ensure_track_artist_id(track: TrackDetails, config: HubConfig | None = None) -> TrackDetails:
+    if track.artist_id or not is_spotify_catalog_id(track.spotify_id):
+        return track
+    try:
+        embed = fetch_track_details_from_embed(track.spotify_id)
+    except SpotifyError:
+        return track
+    if not embed.artist_id:
+        return track
+    return TrackDetails(
+        spotify_id=track.spotify_id,
+        title=track.title,
+        artist=track.artist,
+        artist_id=embed.artist_id,
+        album=track.album or embed.album,
+        year=track.year or embed.year,
+        genres=track.genres,
+        energy=track.energy,
+        valence=track.valence,
+        danceability=track.danceability,
+        tempo=track.tempo,
+        popularity=track.popularity,
+        duration_ms=track.duration_ms,
+        image_url=track.image_url or embed.image_url,
+        preview_url=track.preview_url or embed.preview_url,
         source_rank=track.source_rank,
     )
 
@@ -1411,13 +1558,12 @@ def recommend(
                 details = get_track_details_with_fallback(track_id, config=config)
             except SpotifyError:
                 return None
-        genres = _resolve_item_genres(
-            artist_id=details.artist_id,
-            artist_name=details.artist,
-            existing_genres=details.genres,
+        details = _ensure_track_artist_id(details, config=config)
+        genres = resolve_track_genres(
+            details,
             config=config,
             liked_artists=liked_artists,
-            cache=genre_cache,
+            genre_cache=genre_cache,
         )
         details = _track_with_genres(details, genres)
         if _track_is_liked(details, liked_songs):
@@ -1639,6 +1785,15 @@ def recommend(
             details = get_artist_details_with_fallback(candidate_id, config=config)
         except SpotifyError:
             continue
+        genres = _resolve_item_genres(
+            artist_id=details.spotify_id,
+            artist_name=details.name,
+            existing_genres=details.genres,
+            config=config,
+            liked_artists=liked_artists,
+            cache=genre_cache,
+        )
+        details = _artist_with_genres(details, genres)
         if _artist_is_liked(details, liked_artists):
             continue
         if explicit_genres:
