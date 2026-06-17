@@ -23,6 +23,7 @@ from agent_hub.agents.music_recommender.logic import (
     is_collaboration_artist_name,
     list_liked_artists,
     list_liked_songs,
+    refresh_artist_top_tracks,
 )
 from agent_hub.agents.music_recommender.spotify import (
     ArtistDetails,
@@ -121,6 +122,11 @@ def main() -> None:
         try:
             _upsert_taste_artist(details, "like")
             existing_ids.add(artist_id)
+            if is_spotify_catalog_id(artist_id):
+                try:
+                    refresh_artist_top_tracks(artist_id)
+                except Exception as exc:
+                    print(f"  [warn] Could not fetch top tracks for {artist_name}: {exc}")
             added += 1
             print(f"  + Added: {artist_name} ({artist_id})")
         except Exception as exc:

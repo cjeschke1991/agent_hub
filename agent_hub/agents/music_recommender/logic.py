@@ -34,6 +34,7 @@ from agent_hub.agents.music_recommender.spotify import (
     get_available_genre_seeds,
     get_artist_details,
     get_artist_details_with_fallback,
+    get_artist_top_tracks_with_fallback,
     get_artist_top_track_ids,
     get_related_artist_ids,
     get_spotify_recommendations,
@@ -114,6 +115,18 @@ class TasteArtist:
     sentiment: str
     created_at: str
     updated_at: str
+
+
+@dataclass
+class ArtistTopTrack:
+    rank: int
+    spotify_id: str
+    title: str
+    artist: str
+    album: str
+    year: int | None
+    image_url: str | None
+    preview_url: str | None
 
 
 @dataclass
@@ -220,6 +233,104 @@ def _row_to_taste_artist(row: Any) -> TasteArtist:
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )
+
+
+def _row_to_artist_top_track(row: Any) -> ArtistTopTrack:
+    return ArtistTopTrack(
+        rank=int(row["rank"]),
+        spotify_id=str(row["track_spotify_id"]),
+        title=str(row["title"]),
+        artist=str(row["artist"]),
+        album=str(row["album"] or ""),
+        year=int(row["year"]) if row["year"] is not None else None,
+        image_url=row["image_url"],
+        preview_url=row["preview_url"],
+    )
+
+
+def _delete_artist_top_tracks(artist_spotify_id: str, config: HubConfig | None = None) -> None:
+    ensure_db(config)
+    with connect(config=config) as conn:
+        conn.execute(
+            "DELETE FROM taste_artist_top_tracks WHERE artist_spotify_id = ?",
+            (artist_spotify_id,),
+        )
+
+
+def _save_artist_top_tracks(
+    artist_spotify_id: str,
+    tracks: list[TrackDetails],
+    config: HubConfig | None = None,
+) -> None:
+    ensure_db(config)
+    now = utc_now_iso()
+    with connect(config=config) as conn:
+        conn.execute(
+            "DELETE FROM taste_artist_top_tracks WHERE artist_spotify_id = ?",
+            (artist_spotify_id,),
+        )
+        for rank, track in enumerate(tracks[:5], start=1):
+            conn.execute(
+                """
+                INSERT INTO taste_artist_top_tracks
+                (artist_spotify_id, rank, track_spotify_id, title, artist, album, year,
+                 image_url, preview_url, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    artist_spotify_id,
+                    rank,
+                    track.spotify_id,
+                    track.title,
+                    track.artist,
+                    track.album,
+                    track.year,
+                    track.image_url,
+                    track.preview_url,
+                    now,
+                    now,
+                ),
+            )
+
+
+def _refresh_artist_top_tracks(artist_spotify_id: str, config: HubConfig | None = None) -> None:
+    if not is_spotify_catalog_id(artist_spotify_id):
+        _delete_artist_top_tracks(artist_spotify_id, config=config)
+        return
+    try:
+        tracks = get_artist_top_tracks_with_fallback(artist_spotify_id, limit=5, config=config)
+    except SpotifyError:
+        tracks = []
+    if tracks:
+        _save_artist_top_tracks(artist_spotify_id, tracks, config=config)
+    else:
+        _delete_artist_top_tracks(artist_spotify_id, config=config)
+
+
+def list_artist_top_tracks(
+    artist_spotify_id: str,
+    config: HubConfig | None = None,
+) -> list[ArtistTopTrack]:
+    ensure_db(config)
+    with connect(config=config) as conn:
+        rows = conn.execute(
+            """
+            SELECT rank, track_spotify_id, title, artist, album, year, image_url, preview_url
+            FROM taste_artist_top_tracks
+            WHERE artist_spotify_id = ?
+            ORDER BY rank
+            """,
+            (artist_spotify_id,),
+        ).fetchall()
+    return [_row_to_artist_top_track(row) for row in rows]
+
+
+def refresh_artist_top_tracks(
+    artist_spotify_id: str,
+    config: HubConfig | None = None,
+) -> list[ArtistTopTrack]:
+    _refresh_artist_top_tracks(artist_spotify_id, config=config)
+    return list_artist_top_tracks(artist_spotify_id, config=config)
 
 
 def _row_to_wishlist_song(row: Any) -> WishlistSong:
@@ -347,13 +458,24 @@ def _upsert_taste_artist(details: ArtistDetails, sentiment: str, config: HubConf
 
 
 def add_song(spotify_id: str, sentiment: str, config: HubConfig | None = None) -> TasteSong:
-    details = get_track_details(spotify_id, config=config)
+    try:
+        details = get_track_details(spotify_id, config=config)
+    except SpotifyError:
+        details = get_track_details_with_fallback(spotify_id, config=config)
     return _upsert_taste_song(details, sentiment, config=config)
 
 
 def add_artist(spotify_id: str, sentiment: str, config: HubConfig | None = None) -> TasteArtist:
-    details = get_artist_details(spotify_id, config=config)
-    return _upsert_taste_artist(details, sentiment, config=config)
+    try:
+        details = get_artist_details(spotify_id, config=config)
+    except SpotifyError:
+        details = get_artist_details_with_fallback(spotify_id, config=config)
+    artist = _upsert_taste_artist(details, sentiment, config=config)
+    if sentiment == "like":
+        _refresh_artist_top_tracks(artist.spotify_id, config=config)
+    else:
+        _delete_artist_top_tracks(artist.spotify_id, config=config)
+    return artist
 
 
 def remove_song(spotify_id: str, config: HubConfig | None = None) -> None:
@@ -366,6 +488,7 @@ def remove_artist(spotify_id: str, config: HubConfig | None = None) -> None:
     ensure_db(config)
     with connect(config=config) as conn:
         conn.execute("DELETE FROM taste_artists WHERE spotify_id = ?", (spotify_id,))
+    _delete_artist_top_tracks(spotify_id, config=config)
 
 
 def list_taste_songs(sentiment: str | None = None, config: HubConfig | None = None) -> list[TasteSong]:

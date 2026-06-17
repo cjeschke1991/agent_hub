@@ -59,6 +59,25 @@ CREATE TABLE IF NOT EXISTS taste_artists (
 CREATE INDEX IF NOT EXISTS idx_taste_artists_sentiment ON taste_artists(sentiment);
 CREATE INDEX IF NOT EXISTS idx_taste_artists_spotify_id ON taste_artists(spotify_id);
 
+CREATE TABLE IF NOT EXISTS taste_artist_top_tracks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    artist_spotify_id TEXT NOT NULL,
+    rank INTEGER NOT NULL,
+    track_spotify_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    artist TEXT NOT NULL,
+    album TEXT,
+    year INTEGER,
+    image_url TEXT,
+    preview_url TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(artist_spotify_id, rank)
+);
+
+CREATE INDEX IF NOT EXISTS idx_taste_artist_top_tracks_artist
+    ON taste_artist_top_tracks(artist_spotify_id);
+
 CREATE TABLE IF NOT EXISTS wishlist_songs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     spotify_id TEXT UNIQUE NOT NULL,

@@ -12,6 +12,7 @@ from agent_hub.agents.music_recommender.logic import (
     add_song_to_wishlist,
     ensure_db,
     get_spotify_genres,
+    list_artist_top_tracks,
     list_disliked_artists,
     list_disliked_songs,
     list_liked_artists,
@@ -19,6 +20,7 @@ from agent_hub.agents.music_recommender.logic import (
     list_wishlist_artists,
     list_wishlist_songs,
     recommend,
+    refresh_artist_top_tracks,
     remove_artist,
     remove_artist_from_wishlist,
     remove_song,
@@ -29,6 +31,7 @@ from agent_hub.agents.music_recommender.logic import (
 from agent_hub.agents.music_recommender.spotify import (
     SpotifyConfigError,
     SpotifyError,
+    is_spotify_catalog_id,
     spotify_configured,
     spotify_web_api_available,
 )
@@ -254,6 +257,16 @@ def _render_add_music() -> None:
         _render_artist_row(result, liked_artist_ids, disliked_artist_ids, wishlist_artist_ids, "search_artist")
 
 
+_TASTE_VISIBLE_ITEMS = 8
+_TASTE_SONG_ROW_PX = 78
+_TASTE_ARTIST_ROW_PX = 72
+
+
+def _taste_list_height(*, songs: bool) -> int:
+    row_px = _TASTE_SONG_ROW_PX if songs else _TASTE_ARTIST_ROW_PX
+    return _TASTE_VISIBLE_ITEMS * row_px
+
+
 def _render_taste_song_list(title: str, songs, sentiment: str) -> None:
     st.markdown(f"**{title}**")
     if not songs:
@@ -275,7 +288,7 @@ def _render_taste_song_list(title: str, songs, sentiment: str) -> None:
                 st.rerun()
 
 
-def _render_taste_artist_list(title: str, artists, sentiment: str) -> None:
+def _render_taste_artist_list(title: str, artists, sentiment: str, config) -> None:
     st.markdown(f"**{title}**")
     if not artists:
         st.caption("None yet.")
@@ -286,12 +299,30 @@ def _render_taste_artist_list(title: str, artists, sentiment: str) -> None:
             if artist.image_url:
                 st.image(artist.image_url, width=60)
         with cols[1]:
-            st.markdown(f"**{artist.name}**")
+            if sentiment == "like":
+                with st.expander(artist.name, expanded=False):
+                    top_tracks = list_artist_top_tracks(artist.spotify_id, config=config)
+                    if not top_tracks:
+                        st.caption("No top tracks stored yet.")
+                        if is_spotify_catalog_id(artist.spotify_id) and st.button(
+                            "Fetch top tracks",
+                            key=f"music_fetch_top_tracks_{artist.spotify_id}",
+                        ):
+                            refresh_artist_top_tracks(artist.spotify_id, config=config)
+                            st.rerun()
+                    else:
+                        for track in top_tracks:
+                            year = track.year or "—"
+                            st.markdown(f"**{track.rank}. {track.title}** ({year})")
+                            if track.album:
+                                st.caption(track.album)
+            else:
+                st.markdown(f"**{artist.name}**")
             genres = ", ".join(artist.genres[:3]) if artist.genres else "—"
             st.caption(genres)
         with cols[2]:
             if st.button("Remove", key=f"music_remove_artist_{sentiment}_{artist.spotify_id}"):
-                remove_artist(artist.spotify_id)
+                remove_artist(artist.spotify_id, config=config)
                 st.rerun()
 
 
@@ -299,19 +330,23 @@ def _render_my_taste(config) -> None:
     st.subheader("My Taste Profile")
     st.caption("Songs and artists you've liked or disliked to personalize recommendations.")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        _render_taste_song_list("Liked Songs", list_liked_songs(config), "like")
-    with col2:
-        _render_taste_song_list("Disliked Songs", list_disliked_songs(config), "dislike")
+    st.markdown("**Songs**")
+    with st.container(height=_taste_list_height(songs=True)):
+        col1, col2 = st.columns(2)
+        with col1:
+            _render_taste_song_list("Liked Songs", list_liked_songs(config), "like")
+        with col2:
+            _render_taste_song_list("Disliked Songs", list_disliked_songs(config), "dislike")
 
     st.divider()
 
-    col3, col4 = st.columns(2)
-    with col3:
-        _render_taste_artist_list("Liked Artists", list_liked_artists(config), "like")
-    with col4:
-        _render_taste_artist_list("Disliked Artists", list_disliked_artists(config), "dislike")
+    st.markdown("**Artists**")
+    with st.container(height=_taste_list_height(songs=False)):
+        col3, col4 = st.columns(2)
+        with col3:
+            _render_taste_artist_list("Liked Artists", list_liked_artists(config), "like", config)
+        with col4:
+            _render_taste_artist_list("Disliked Artists", list_disliked_artists(config), "dislike", config)
 
 
 def _render_wishlist(config) -> None:
@@ -566,6 +601,10 @@ def _render_recommendations() -> None:
 
     wishlist_song_ids = {s.spotify_id for s in list_wishlist_songs()}
     wishlist_artist_ids = {a.spotify_id for a in list_wishlist_artists()}
+    liked_song_ids = {s.spotify_id for s in list_liked_songs()}
+    disliked_song_ids = {s.spotify_id for s in list_disliked_songs()}
+    liked_artist_ids = {a.spotify_id for a in list_liked_artists()}
+    disliked_artist_ids = {a.spotify_id for a in list_disliked_artists()}
 
     _ZONE_BADGE: dict[str, str] = {
         "safe": "🟢 Safe",
@@ -597,12 +636,38 @@ def _render_recommendations() -> None:
                     f"{k}: {v:.0f}" for k, v in item.score.as_labels().items()
                 )
                 st.caption(breakdown)
-                if st.button(
-                    "Add to wishlist",
-                    key=f"music_rec_song_wl_{item.track.spotify_id}",
-                    type="primary" if item.track.spotify_id in wishlist_song_ids else "secondary",
-                ):
-                    _add_song_wishlist(item.track.spotify_id, item.track.title)
+                like_col, dislike_col, wl_col = st.columns([1, 1, 1])
+                with like_col:
+                    if st.button(
+                        "Like",
+                        key=f"music_rec_song_like_{item.track.spotify_id}",
+                        type="primary" if item.track.spotify_id in liked_song_ids else "secondary",
+                    ):
+                        try:
+                            add_song(item.track.spotify_id, "like")
+                            st.success(f"Liked '{item.track.title}'.")
+                            st.rerun()
+                        except SpotifyConfigError as exc:
+                            st.error(str(exc))
+                with dislike_col:
+                    if st.button(
+                        "Dislike",
+                        key=f"music_rec_song_dislike_{item.track.spotify_id}",
+                        type="primary" if item.track.spotify_id in disliked_song_ids else "secondary",
+                    ):
+                        try:
+                            add_song(item.track.spotify_id, "dislike")
+                            st.success(f"Disliked '{item.track.title}'.")
+                            st.rerun()
+                        except SpotifyConfigError as exc:
+                            st.error(str(exc))
+                with wl_col:
+                    if st.button(
+                        "Add to wishlist",
+                        key=f"music_rec_song_wl_{item.track.spotify_id}",
+                        type="primary" if item.track.spotify_id in wishlist_song_ids else "secondary",
+                    ):
+                        _add_song_wishlist(item.track.spotify_id, item.track.title)
 
     if artist_recs:
         st.markdown("### Artists")
@@ -624,12 +689,38 @@ def _render_recommendations() -> None:
                     f"{k}: {v:.0f}" for k, v in item.score.as_labels().items()
                 )
                 st.caption(breakdown)
-                if st.button(
-                    "Add to wishlist",
-                    key=f"music_rec_artist_wl_{item.artist.spotify_id}",
-                    type="primary" if item.artist.spotify_id in wishlist_artist_ids else "secondary",
-                ):
-                    _add_artist_wishlist(item.artist.spotify_id, item.artist.name)
+                like_col, dislike_col, wl_col = st.columns([1, 1, 1])
+                with like_col:
+                    if st.button(
+                        "Like",
+                        key=f"music_rec_artist_like_{item.artist.spotify_id}",
+                        type="primary" if item.artist.spotify_id in liked_artist_ids else "secondary",
+                    ):
+                        try:
+                            add_artist(item.artist.spotify_id, "like")
+                            st.success(f"Liked {item.artist.name}.")
+                            st.rerun()
+                        except SpotifyConfigError as exc:
+                            st.error(str(exc))
+                with dislike_col:
+                    if st.button(
+                        "Dislike",
+                        key=f"music_rec_artist_dislike_{item.artist.spotify_id}",
+                        type="primary" if item.artist.spotify_id in disliked_artist_ids else "secondary",
+                    ):
+                        try:
+                            add_artist(item.artist.spotify_id, "dislike")
+                            st.success(f"Disliked {item.artist.name}.")
+                            st.rerun()
+                        except SpotifyConfigError as exc:
+                            st.error(str(exc))
+                with wl_col:
+                    if st.button(
+                        "Add to wishlist",
+                        key=f"music_rec_artist_wl_{item.artist.spotify_id}",
+                        type="primary" if item.artist.spotify_id in wishlist_artist_ids else "secondary",
+                    ):
+                        _add_artist_wishlist(item.artist.spotify_id, item.artist.name)
 
 
 def render() -> None:

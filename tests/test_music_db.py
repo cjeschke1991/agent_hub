@@ -35,5 +35,6 @@ def test_schema_tables(music_config):
     conn.close()
     assert "taste_songs" in tables
     assert "taste_artists" in tables
+    assert "taste_artist_top_tracks" in tables
     assert "wishlist_songs" in tables
     assert "wishlist_artists" in tables

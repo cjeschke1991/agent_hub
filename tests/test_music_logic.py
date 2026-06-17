@@ -16,6 +16,7 @@ from agent_hub.agents.music_recommender.logic import (
     list_disliked_songs,
     list_liked_artists,
     list_liked_songs,
+    list_artist_top_tracks,
     list_wishlist_artists,
     list_wishlist_songs,
     recommend,
@@ -114,6 +115,30 @@ def test_add_and_list_liked_artist(music_config, monkeypatch):
         "agent_hub.agents.music_recommender.logic.get_artist_details",
         lambda sid, config=None: _fake_artist(sid),
     )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_artist_top_tracks_with_fallback",
+        lambda artist_id, limit=5, config=None: [
+            TrackDetails(
+                spotify_id=f"top-{i}",
+                title=f"Top Song {i}",
+                artist="Test Artist",
+                artist_id=artist_id,
+                album="Album",
+                year=2020,
+                genres=["rock"],
+                energy=0.5,
+                valence=0.5,
+                danceability=0.5,
+                tempo=120.0,
+                popularity=50,
+                duration_ms=180000,
+                image_url=None,
+                preview_url=None,
+                source_rank=i,
+            )
+            for i in range(5)
+        ],
+    )
     artist = add_artist("a1", "like", config=music_config)
     assert artist.name == "Test Artist"
     assert artist.sentiment == "like"
@@ -122,15 +147,25 @@ def test_add_and_list_liked_artist(music_config, monkeypatch):
     assert len(liked) == 1
     assert liked[0].spotify_id == "a1"
 
+    top_tracks = list_artist_top_tracks("a1", config=music_config)
+    assert len(top_tracks) == 5
+    assert top_tracks[0].title == "Top Song 0"
+    assert top_tracks[0].rank == 1
+
 
 def test_remove_artist(music_config, monkeypatch):
     monkeypatch.setattr(
         "agent_hub.agents.music_recommender.logic.get_artist_details",
         lambda sid, config=None: _fake_artist(sid),
     )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_artist_top_tracks_with_fallback",
+        lambda artist_id, limit=5, config=None: [],
+    )
     add_artist("a2", "like", config=music_config)
     remove_artist("a2", config=music_config)
     assert list_liked_artists(music_config) == []
+    assert list_artist_top_tracks("a2", config=music_config) == []
 
 
 def test_song_wishlist(music_config, monkeypatch):

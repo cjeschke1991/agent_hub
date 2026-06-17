@@ -512,6 +512,47 @@ def fetch_artist_top_tracks_from_embed(
     return tracks
 
 
+def get_artist_top_tracks_with_fallback(
+    artist_id: str,
+    *,
+    limit: int = 5,
+    config: HubConfig | None = None,
+) -> list[TrackDetails]:
+    """Return an artist's top tracks, using embed pages when the Web API is unavailable."""
+    if not is_spotify_catalog_id(artist_id):
+        return []
+    if spotify_web_api_available(config):
+        track_ids = get_artist_top_track_ids(artist_id, config=config)
+        tracks: list[TrackDetails] = []
+        for rank, track_id in enumerate(track_ids[:limit]):
+            try:
+                track = get_track_details_with_fallback(track_id, config=config)
+                track = TrackDetails(
+                    spotify_id=track.spotify_id,
+                    title=track.title,
+                    artist=track.artist,
+                    artist_id=track.artist_id,
+                    album=track.album,
+                    year=track.year,
+                    genres=track.genres,
+                    popularity=track.popularity,
+                    energy=track.energy,
+                    valence=track.valence,
+                    danceability=track.danceability,
+                    tempo=track.tempo,
+                    duration_ms=track.duration_ms,
+                    image_url=track.image_url,
+                    preview_url=track.preview_url,
+                    source_rank=rank,
+                )
+                tracks.append(track)
+            except SpotifyError:
+                continue
+        if tracks:
+            return tracks
+    return fetch_artist_top_tracks_from_embed(artist_id, limit=limit)
+
+
 def fetch_artist_details_from_embed(artist_id: str) -> ArtistDetails:
     """Fetch basic artist metadata from Spotify's public embed page."""
     payload = _fetch_embed_next_data(f"artist/{artist_id}")
