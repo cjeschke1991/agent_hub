@@ -220,8 +220,8 @@ def _render_add_music() -> None:
     liked_song_ids = {s.spotify_id for s in list_liked_songs()}
     disliked_song_ids = {s.spotify_id for s in list_disliked_songs()}
     wishlist_song_ids = {s.spotify_id for s in list_wishlist_songs()}
-    liked_artist_ids = {a.spotify_id for a in list_liked_artists()}
-    disliked_artist_ids = {a.spotify_id for a in list_disliked_artists()}
+    liked_artist_ids = {a.spotify_id for a in list_liked_artists() if a.spotify_id}
+    disliked_artist_ids = {a.spotify_id for a in list_disliked_artists() if a.spotify_id}
     wishlist_artist_ids = {a.spotify_id for a in list_wishlist_artists()}
 
     st.subheader("Search Songs")
@@ -267,6 +267,14 @@ def _taste_list_height(*, songs: bool) -> int:
     return _TASTE_VISIBLE_ITEMS * row_px
 
 
+def _format_genres(genres: list[str]) -> str:
+    return ", ".join(genres) if genres else "—"
+
+
+def _render_genres_caption(genres: list[str]) -> None:
+    st.caption(f"Genres: {_format_genres(genres)}")
+
+
 def _render_taste_song_list(title: str, songs, sentiment: str) -> None:
     st.markdown(f"**{title}**")
     if not songs:
@@ -280,8 +288,7 @@ def _render_taste_song_list(title: str, songs, sentiment: str) -> None:
         with cols[1]:
             year = song.year or "—"
             st.markdown(f"**{song.title}** — {song.artist} ({year})")
-            genres = ", ".join(song.genres[:3]) if song.genres else "—"
-            st.caption(genres)
+            _render_genres_caption(song.genres)
         with cols[2]:
             if st.button("Remove", key=f"music_remove_song_{sentiment}_{song.spotify_id}"):
                 remove_song(song.spotify_id)
@@ -301,14 +308,14 @@ def _render_taste_artist_list(title: str, artists, sentiment: str, config) -> No
         with cols[1]:
             if sentiment == "like":
                 with st.expander(artist.name, expanded=False):
-                    top_tracks = list_artist_top_tracks(artist.spotify_id, config=config)
+                    top_tracks = list_artist_top_tracks(artist.pandora_id, config=config)
                     if not top_tracks:
                         st.caption("No top tracks stored yet.")
-                        if is_spotify_catalog_id(artist.spotify_id) and st.button(
+                        if artist.spotify_id and st.button(
                             "Fetch top tracks",
-                            key=f"music_fetch_top_tracks_{artist.spotify_id}",
+                            key=f"music_fetch_top_tracks_{artist.pandora_id}",
                         ):
-                            refresh_artist_top_tracks(artist.spotify_id, config=config)
+                            refresh_artist_top_tracks(artist.pandora_id, config=config)
                             st.rerun()
                     else:
                         for track in top_tracks:
@@ -318,11 +325,10 @@ def _render_taste_artist_list(title: str, artists, sentiment: str, config) -> No
                                 st.caption(track.album)
             else:
                 st.markdown(f"**{artist.name}**")
-            genres = ", ".join(artist.genres[:3]) if artist.genres else "—"
-            st.caption(genres)
+            _render_genres_caption(artist.genres)
         with cols[2]:
-            if st.button("Remove", key=f"music_remove_artist_{sentiment}_{artist.spotify_id}"):
-                remove_artist(artist.spotify_id, config=config)
+            if st.button("Remove", key=f"music_remove_artist_{sentiment}_{artist.pandora_id}"):
+                remove_artist(artist.pandora_id, config=config)
                 st.rerun()
 
 
@@ -603,8 +609,8 @@ def _render_recommendations() -> None:
     wishlist_artist_ids = {a.spotify_id for a in list_wishlist_artists()}
     liked_song_ids = {s.spotify_id for s in list_liked_songs()}
     disliked_song_ids = {s.spotify_id for s in list_disliked_songs()}
-    liked_artist_ids = {a.spotify_id for a in list_liked_artists()}
-    disliked_artist_ids = {a.spotify_id for a in list_disliked_artists()}
+    liked_artist_ids = {a.spotify_id for a in list_liked_artists() if a.spotify_id}
+    disliked_artist_ids = {a.spotify_id for a in list_disliked_artists() if a.spotify_id}
 
     _ZONE_BADGE: dict[str, str] = {
         "safe": "🟢 Safe",
@@ -627,8 +633,7 @@ def _render_recommendations() -> None:
                     f"— **Score: {item.score.total}** &nbsp; `{zone_label}`"
                 )
                 st.info(item.reason)
-                genres = ", ".join(item.track.genres[:4]) if item.track.genres else "—"
-                st.markdown(f"**Genres:** {genres}")
+                _render_genres_caption(item.track.genres)
                 af = item.track.audio_features_display()
                 if af:
                     st.markdown("  ".join(f"**{k}:** {v}" for k, v in af.items()))

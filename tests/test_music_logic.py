@@ -27,6 +27,7 @@ from agent_hub.agents.music_recommender.logic import (
 )
 from agent_hub.agents.music_recommender.scoring import artist_score
 from agent_hub.agents.music_recommender.spotify import ArtistDetails, TrackDetails
+from agent_hub.core.music_db import pandora_artist_id
 from agent_hub.core.config import HubConfig, MusicRecommenderWeights, SpotifyConfig
 
 
@@ -146,8 +147,9 @@ def test_add_and_list_liked_artist(music_config, monkeypatch):
     liked = list_liked_artists(music_config)
     assert len(liked) == 1
     assert liked[0].spotify_id == "a1"
+    assert liked[0].pandora_id == pandora_artist_id("Test Artist")
 
-    top_tracks = list_artist_top_tracks("a1", config=music_config)
+    top_tracks = list_artist_top_tracks(liked[0].pandora_id, config=music_config)
     assert len(top_tracks) == 5
     assert top_tracks[0].title == "Top Song 0"
     assert top_tracks[0].rank == 1
@@ -629,6 +631,87 @@ def test_recommend_excludes_liked_song_when_spotify_id_differs(music_config, mon
     )
 
     assert {item.track.spotify_id for item in songs} == {"new-track"}
+
+
+def test_pandora_artist_stores_both_ids(music_config):
+    artist = _upsert_taste_artist(
+        ArtistDetails(
+            spotify_id="pandora-artist-abc123",
+            name="Embed Artist",
+            genres=[],
+            popularity=0,
+            followers=0,
+            image_url=None,
+        ),
+        "like",
+        config=music_config,
+    )
+    assert artist.pandora_id == "pandora-artist-abc123"
+    assert artist.spotify_id is None
+
+    from agent_hub.agents.music_recommender.logic import update_taste_artist_spotify_id
+
+    linked = update_taste_artist_spotify_id(
+        artist.pandora_id,
+        "real-spotify-artist-id",
+        config=music_config,
+    )
+    assert linked is not None
+    assert linked.spotify_id == "real-spotify-artist-id"
+    assert linked.pandora_id == "pandora-artist-abc123"
+
+
+def test_refresh_taste_artist_genres(music_config, monkeypatch):
+    from agent_hub.agents.music_recommender.logic import refresh_taste_artist_genres
+
+    artist = _upsert_taste_artist(_fake_artist("a1"), "like", config=music_config)
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.get_artist_genres_with_fallback",
+        lambda artist_id, artist_name="", config=None, limit=8: ["rock", "jam band"],
+    )
+    genres = refresh_taste_artist_genres(artist.pandora_id, config=music_config)
+    assert genres == ["rock", "jam band"]
+    assert list_liked_artists(music_config)[0].genres == ["rock", "jam band"]
+
+
+def test_link_missing_liked_artist_spotify_ids_from_siblings(music_config):
+    from agent_hub.agents.music_recommender.logic import (
+        link_missing_liked_artist_spotify_ids,
+        update_taste_artist_spotify_id,
+    )
+
+    base = _upsert_taste_artist(
+        ArtistDetails(
+            spotify_id="pandora-artist-base",
+            name="Drake",
+            genres=[],
+            popularity=0,
+            followers=0,
+            image_url=None,
+        ),
+        "like",
+        config=music_config,
+    )
+    update_taste_artist_spotify_id(base.pandora_id, "drake-catalog-id", config=music_config)
+    duplicate = _upsert_taste_artist(
+        ArtistDetails(
+            spotify_id="pandora-artist-explicit",
+            name="Drake explicit",
+            genres=[],
+            popularity=0,
+            followers=0,
+            image_url=None,
+        ),
+        "like",
+        config=music_config,
+    )
+    assert duplicate.spotify_id is None
+
+    linked, remaining = link_missing_liked_artist_spotify_ids(config=music_config)
+    assert linked >= 1
+    updated = list_liked_artists(music_config)
+    explicit = next(a for a in updated if a.name == "Drake explicit")
+    assert explicit.spotify_id == "drake-catalog-id"
 
 
 def test_recommend_excludes_liked_artist_when_spotify_id_differs(music_config, monkeypatch):

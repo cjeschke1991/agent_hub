@@ -32,6 +32,7 @@ from agent_hub.agents.music_recommender.spotify import (
     fetch_playlist_tracks_from_embed,
     fetch_track_details_from_embed,
     get_available_genre_seeds,
+    get_artist_genres_with_fallback,
     get_artist_details,
     get_artist_details_with_fallback,
     get_artist_top_tracks_with_fallback,
@@ -48,7 +49,7 @@ from agent_hub.agents.music_recommender.spotify import (
     spotify_web_api_available,
 )
 from agent_hub.core.config import HubConfig, load_config
-from agent_hub.core.music_db import connect, init_db
+from agent_hub.core.music_db import connect, init_db, pandora_artist_id
 from agent_hub.core.slices import utc_now_iso
 
 
@@ -106,7 +107,8 @@ class TasteSong:
 @dataclass
 class TasteArtist:
     id: int
-    spotify_id: str
+    pandora_id: str
+    spotify_id: str | None
     name: str
     genres: list[str]
     popularity: int
@@ -221,9 +223,11 @@ def _row_to_taste_song(row: Any) -> TasteSong:
 
 
 def _row_to_taste_artist(row: Any) -> TasteArtist:
+    spotify_id = row["spotify_id"]
     return TasteArtist(
         id=int(row["id"]),
-        spotify_id=str(row["spotify_id"]),
+        pandora_id=str(row["pandora_id"]),
+        spotify_id=str(spotify_id) if spotify_id else None,
         name=str(row["name"]),
         genres=_parse_json_list(row["genres"]),
         popularity=int(row["popularity"] or 0),
@@ -233,6 +237,30 @@ def _row_to_taste_artist(row: Any) -> TasteArtist:
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )
+
+
+def _artist_ids_from_details(details: ArtistDetails) -> tuple[str, str | None]:
+    if details.spotify_id.startswith("pandora-"):
+        return details.spotify_id, None
+    return pandora_artist_id(details.name), details.spotify_id
+
+
+def _find_taste_artist_row(conn: Any, artist_key: str) -> Any | None:
+    return conn.execute(
+        """
+        SELECT * FROM taste_artists
+        WHERE pandora_id = ? OR spotify_id = ?
+        LIMIT 1
+        """,
+        (artist_key, artist_key),
+    ).fetchone()
+
+
+def _get_taste_artist_by_key(artist_key: str, config: HubConfig | None = None) -> TasteArtist | None:
+    ensure_db(config)
+    with connect(config=config) as conn:
+        row = _find_taste_artist_row(conn, artist_key)
+    return _row_to_taste_artist(row) if row else None
 
 
 def _row_to_artist_top_track(row: Any) -> ArtistTopTrack:
@@ -248,17 +276,17 @@ def _row_to_artist_top_track(row: Any) -> ArtistTopTrack:
     )
 
 
-def _delete_artist_top_tracks(artist_spotify_id: str, config: HubConfig | None = None) -> None:
+def _delete_artist_top_tracks(artist_pandora_id: str, config: HubConfig | None = None) -> None:
     ensure_db(config)
     with connect(config=config) as conn:
         conn.execute(
-            "DELETE FROM taste_artist_top_tracks WHERE artist_spotify_id = ?",
-            (artist_spotify_id,),
+            "DELETE FROM taste_artist_top_tracks WHERE artist_pandora_id = ?",
+            (artist_pandora_id,),
         )
 
 
 def _save_artist_top_tracks(
-    artist_spotify_id: str,
+    artist_pandora_id: str,
     tracks: list[TrackDetails],
     config: HubConfig | None = None,
 ) -> None:
@@ -266,19 +294,19 @@ def _save_artist_top_tracks(
     now = utc_now_iso()
     with connect(config=config) as conn:
         conn.execute(
-            "DELETE FROM taste_artist_top_tracks WHERE artist_spotify_id = ?",
-            (artist_spotify_id,),
+            "DELETE FROM taste_artist_top_tracks WHERE artist_pandora_id = ?",
+            (artist_pandora_id,),
         )
         for rank, track in enumerate(tracks[:5], start=1):
             conn.execute(
                 """
                 INSERT INTO taste_artist_top_tracks
-                (artist_spotify_id, rank, track_spotify_id, title, artist, album, year,
+                (artist_pandora_id, rank, track_spotify_id, title, artist, album, year,
                  image_url, preview_url, created_at, updated_at)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
-                    artist_spotify_id,
+                    artist_pandora_id,
                     rank,
                     track.spotify_id,
                     track.title,
@@ -293,44 +321,312 @@ def _save_artist_top_tracks(
             )
 
 
-def _refresh_artist_top_tracks(artist_spotify_id: str, config: HubConfig | None = None) -> None:
-    if not is_spotify_catalog_id(artist_spotify_id):
-        _delete_artist_top_tracks(artist_spotify_id, config=config)
+def _refresh_artist_top_tracks(artist: TasteArtist, config: HubConfig | None = None) -> None:
+    catalog_id = artist.spotify_id
+    if not catalog_id or not is_spotify_catalog_id(catalog_id):
+        _delete_artist_top_tracks(artist.pandora_id, config=config)
         return
     try:
-        tracks = get_artist_top_tracks_with_fallback(artist_spotify_id, limit=5, config=config)
+        tracks = get_artist_top_tracks_with_fallback(catalog_id, limit=5, config=config)
     except SpotifyError:
         tracks = []
     if tracks:
-        _save_artist_top_tracks(artist_spotify_id, tracks, config=config)
+        _save_artist_top_tracks(artist.pandora_id, tracks, config=config)
     else:
-        _delete_artist_top_tracks(artist_spotify_id, config=config)
+        _delete_artist_top_tracks(artist.pandora_id, config=config)
 
 
 def list_artist_top_tracks(
-    artist_spotify_id: str,
+    artist_key: str,
     config: HubConfig | None = None,
 ) -> list[ArtistTopTrack]:
     ensure_db(config)
+    artist = _get_taste_artist_by_key(artist_key, config=config)
+    pandora_id = artist.pandora_id if artist else artist_key
     with connect(config=config) as conn:
         rows = conn.execute(
             """
             SELECT rank, track_spotify_id, title, artist, album, year, image_url, preview_url
             FROM taste_artist_top_tracks
-            WHERE artist_spotify_id = ?
+            WHERE artist_pandora_id = ?
             ORDER BY rank
             """,
-            (artist_spotify_id,),
+            (pandora_id,),
         ).fetchall()
     return [_row_to_artist_top_track(row) for row in rows]
 
 
 def refresh_artist_top_tracks(
-    artist_spotify_id: str,
+    artist_key: str,
     config: HubConfig | None = None,
 ) -> list[ArtistTopTrack]:
-    _refresh_artist_top_tracks(artist_spotify_id, config=config)
-    return list_artist_top_tracks(artist_spotify_id, config=config)
+    artist = _get_taste_artist_by_key(artist_key, config=config)
+    if artist is None:
+        return []
+    _refresh_artist_top_tracks(artist, config=config)
+    return list_artist_top_tracks(artist.pandora_id, config=config)
+
+
+def refresh_artist_top_tracks_from_catalog(
+    artist_key: str,
+    catalog_artist_id: str,
+    config: HubConfig | None = None,
+) -> list[ArtistTopTrack]:
+    """Fetch top tracks from a real Spotify artist ID and store under the taste artist."""
+    artist = _get_taste_artist_by_key(artist_key, config=config)
+    if artist is None:
+        return []
+    if is_spotify_catalog_id(catalog_artist_id):
+        update_taste_artist_spotify_id(artist.pandora_id, catalog_artist_id, config=config)
+        artist = _get_taste_artist_by_key(artist.pandora_id, config=config)
+        if artist is None:
+            return []
+    _refresh_artist_top_tracks(artist, config=config)
+    return list_artist_top_tracks(artist.pandora_id, config=config)
+
+
+def update_taste_artist_spotify_id(
+    pandora_id: str,
+    catalog_spotify_id: str,
+    config: HubConfig | None = None,
+) -> TasteArtist | None:
+    if not is_spotify_catalog_id(catalog_spotify_id):
+        return _get_taste_artist_by_key(pandora_id, config=config)
+    ensure_db(config)
+    now = utc_now_iso()
+    with connect(config=config) as conn:
+        conn.execute(
+            """
+            UPDATE taste_artists
+            SET spotify_id = ?, updated_at = ?
+            WHERE pandora_id = ?
+            """,
+            (catalog_spotify_id, now, pandora_id),
+        )
+    return _get_taste_artist_by_key(pandora_id, config=config)
+
+
+def link_missing_liked_artist_spotify_ids(
+    config: HubConfig | None = None,
+) -> tuple[int, int]:
+    """Link Spotify catalog IDs for liked artists using sibling artist matches."""
+    liked_artists = list_liked_artists(config)
+    linked = 0
+    for artist in liked_artists:
+        if artist.spotify_id:
+            continue
+        catalog_id = resolve_catalog_id_from_sibling_artists(artist, liked_artists)
+        if not catalog_id:
+            continue
+        update_taste_artist_spotify_id(artist.pandora_id, catalog_id, config=config)
+        linked += 1
+    remaining = sum(1 for artist in list_liked_artists(config) if not artist.spotify_id)
+    return linked, remaining
+
+
+def update_taste_artist_genres(
+    pandora_id: str,
+    genres: list[str],
+    config: HubConfig | None = None,
+) -> None:
+    ensure_db(config)
+    now = utc_now_iso()
+    with connect(config=config) as conn:
+        conn.execute(
+            """
+            UPDATE taste_artists
+            SET genres = ?, updated_at = ?
+            WHERE pandora_id = ?
+            """,
+            (_json_dumps(genres), now, pandora_id),
+        )
+
+
+def update_taste_song_genres(
+    spotify_id: str,
+    genres: list[str],
+    config: HubConfig | None = None,
+) -> None:
+    ensure_db(config)
+    now = utc_now_iso()
+    with connect(config=config) as conn:
+        conn.execute(
+            """
+            UPDATE taste_songs
+            SET genres = ?, updated_at = ?
+            WHERE spotify_id = ?
+            """,
+            (_json_dumps(genres), now, spotify_id),
+        )
+
+
+def _genres_from_liked_artist_match(
+    artist_name: str,
+    liked_artists: list[TasteArtist],
+) -> list[str]:
+    def normalize(value: str) -> str:
+        cleaned = _normalize_music_text(value)
+        if cleaned.startswith("the "):
+            cleaned = cleaned[4:]
+        return cleaned
+
+    target = normalize(artist_name)
+    for liked in liked_artists:
+        if not liked.genres:
+            continue
+        liked_name = normalize(liked.name)
+        if (
+            target == liked_name
+            or target in liked_name
+            or liked_name in target
+        ):
+            return list(liked.genres)
+    return []
+
+
+def refresh_taste_artist_genres(
+    artist_key: str,
+    config: HubConfig | None = None,
+) -> list[str]:
+    artist = _get_taste_artist_by_key(artist_key, config=config)
+    if artist is None:
+        return []
+    genres = get_artist_genres_with_fallback(
+        artist.spotify_id or "",
+        artist_name=artist.name,
+        config=config,
+    )
+    if genres:
+        update_taste_artist_genres(artist.pandora_id, genres, config=config)
+    return genres
+
+
+def refresh_taste_song_genres(
+    song_spotify_id: str,
+    config: HubConfig | None = None,
+    *,
+    liked_artists: list[TasteArtist] | None = None,
+) -> list[str]:
+    ensure_db(config)
+    with connect(config=config) as conn:
+        row = conn.execute(
+            "SELECT * FROM taste_songs WHERE spotify_id = ?",
+            (song_spotify_id,),
+        ).fetchone()
+    if row is None:
+        return []
+    song = _row_to_taste_song(row)
+    liked_artists = liked_artists if liked_artists is not None else list_liked_artists(config)
+
+    genres: list[str] = []
+    if song.artist_id and is_spotify_catalog_id(song.artist_id):
+        genres = get_artist_genres_with_fallback(
+            song.artist_id,
+            artist_name=song.artist,
+            config=config,
+        )
+    elif is_spotify_catalog_id(song.spotify_id):
+        try:
+            track = fetch_track_details_from_embed(song.spotify_id)
+            if track.artist_id:
+                genres = get_artist_genres_with_fallback(
+                    track.artist_id,
+                    artist_name=track.artist,
+                    config=config,
+                )
+        except SpotifyError:
+            pass
+
+    if not genres:
+        genres = _genres_from_liked_artist_match(song.artist, liked_artists)
+
+    if genres:
+        update_taste_song_genres(song.spotify_id, genres, config=config)
+    return genres
+
+
+def backfill_taste_genres(config: HubConfig | None = None) -> tuple[int, int]:
+    """Refresh genres for all liked artists and songs. Returns (artists, songs) updated."""
+    artists_updated = 0
+    for artist in list_liked_artists(config):
+        if refresh_taste_artist_genres(artist.pandora_id, config=config):
+            artists_updated += 1
+
+    liked_artists = list_liked_artists(config)
+    songs_updated = 0
+    for song in list_liked_songs(config):
+        if refresh_taste_song_genres(
+            song.spotify_id,
+            config=config,
+            liked_artists=liked_artists,
+        ):
+            songs_updated += 1
+    return artists_updated, songs_updated
+
+
+def _resolve_item_genres(
+    *,
+    artist_id: str,
+    artist_name: str,
+    existing_genres: list[str],
+    config: HubConfig | None,
+    liked_artists: list[TasteArtist],
+    cache: dict[str, list[str]],
+    limit: int = 8,
+) -> list[str]:
+    if existing_genres:
+        return existing_genres
+    cache_key = (
+        artist_id
+        if artist_id and is_spotify_catalog_id(artist_id)
+        else _normalize_music_text(artist_name)
+    )
+    if cache_key in cache:
+        return cache[cache_key]
+
+    genres: list[str] = []
+    if artist_id and is_spotify_catalog_id(artist_id):
+        genres = get_artist_genres_with_fallback(
+            artist_id,
+            artist_name=artist_name,
+            config=config,
+            limit=limit,
+        )
+    if not genres:
+        genres = _genres_from_liked_artist_match(artist_name, liked_artists)
+    if not genres and artist_name:
+        genres = get_artist_genres_with_fallback(
+            "",
+            artist_name=artist_name,
+            config=config,
+            limit=limit,
+        )
+
+    cache[cache_key] = genres
+    return genres
+
+
+def _track_with_genres(track: TrackDetails, genres: list[str]) -> TrackDetails:
+    if not genres or track.genres:
+        return track
+    return TrackDetails(
+        spotify_id=track.spotify_id,
+        title=track.title,
+        artist=track.artist,
+        artist_id=track.artist_id,
+        album=track.album,
+        year=track.year,
+        genres=genres,
+        energy=track.energy,
+        valence=track.valence,
+        danceability=track.danceability,
+        tempo=track.tempo,
+        popularity=track.popularity,
+        duration_ms=track.duration_ms,
+        image_url=track.image_url,
+        preview_url=track.preview_url,
+        source_rank=track.source_rank,
+    )
 
 
 def _row_to_wishlist_song(row: Any) -> WishlistSong:
@@ -422,38 +718,69 @@ def _upsert_taste_artist(details: ArtistDetails, sentiment: str, config: HubConf
     if sentiment not in {"like", "dislike"}:
         raise MusicValidationError("Sentiment must be 'like' or 'dislike'.")
     ensure_db(config)
+    pandora_id, catalog_id = _artist_ids_from_details(details)
     now = utc_now_iso()
     with connect(config=config) as conn:
         existing = conn.execute(
-            "SELECT id FROM taste_artists WHERE spotify_id = ?", (details.spotify_id,)
+            """
+            SELECT * FROM taste_artists
+            WHERE pandora_id = ? OR (spotify_id IS NOT NULL AND spotify_id = ?)
+               OR lower(trim(name)) = lower(trim(?))
+            LIMIT 1
+            """,
+            (pandora_id, catalog_id or "", details.name),
         ).fetchone()
         if existing:
+            merged_catalog = catalog_id or existing["spotify_id"]
             conn.execute(
                 """
                 UPDATE taste_artists
-                SET name=?, genres=?, popularity=?, followers=?, image_url=?, sentiment=?, updated_at=?
-                WHERE spotify_id=?
+                SET pandora_id=?, spotify_id=?, name=?, genres=?, popularity=?, followers=?,
+                    image_url=?, sentiment=?, updated_at=?
+                WHERE id=?
                 """,
                 (
-                    details.name, _json_dumps(details.genres), details.popularity,
-                    details.followers, details.image_url, sentiment, now, details.spotify_id,
+                    str(existing["pandora_id"]),
+                    merged_catalog,
+                    details.name,
+                    _json_dumps(details.genres),
+                    details.popularity,
+                    details.followers,
+                    details.image_url,
+                    sentiment,
+                    now,
+                    existing["id"],
                 ),
             )
+            row = conn.execute(
+                "SELECT * FROM taste_artists WHERE id = ?",
+                (existing["id"],),
+            ).fetchone()
         else:
             conn.execute(
                 """
                 INSERT INTO taste_artists
-                (spotify_id, name, genres, popularity, followers, image_url, sentiment, created_at, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?)
+                (pandora_id, spotify_id, name, genres, popularity, followers, image_url,
+                 sentiment, created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
-                    details.spotify_id, details.name, _json_dumps(details.genres),
-                    details.popularity, details.followers, details.image_url, sentiment, now, now,
+                    pandora_id,
+                    catalog_id,
+                    details.name,
+                    _json_dumps(details.genres),
+                    details.popularity,
+                    details.followers,
+                    details.image_url,
+                    sentiment,
+                    now,
+                    now,
                 ),
             )
-        row = conn.execute(
-            "SELECT * FROM taste_artists WHERE spotify_id = ?", (details.spotify_id,)
-        ).fetchone()
+            row = conn.execute(
+                "SELECT * FROM taste_artists WHERE pandora_id = ?",
+                (pandora_id,),
+            ).fetchone()
     return _row_to_taste_artist(row)
 
 
@@ -462,7 +789,12 @@ def add_song(spotify_id: str, sentiment: str, config: HubConfig | None = None) -
         details = get_track_details(spotify_id, config=config)
     except SpotifyError:
         details = get_track_details_with_fallback(spotify_id, config=config)
-    return _upsert_taste_song(details, sentiment, config=config)
+    song = _upsert_taste_song(details, sentiment, config=config)
+    if not song.genres:
+        refresh_taste_song_genres(song.spotify_id, config=config)
+        refreshed = list_liked_songs(config)
+        song = next((s for s in refreshed if s.spotify_id == song.spotify_id), song)
+    return song
 
 
 def add_artist(spotify_id: str, sentiment: str, config: HubConfig | None = None) -> TasteArtist:
@@ -471,10 +803,13 @@ def add_artist(spotify_id: str, sentiment: str, config: HubConfig | None = None)
     except SpotifyError:
         details = get_artist_details_with_fallback(spotify_id, config=config)
     artist = _upsert_taste_artist(details, sentiment, config=config)
+    if not artist.genres:
+        refresh_taste_artist_genres(artist.pandora_id, config=config)
+        artist = _get_taste_artist_by_key(artist.pandora_id, config=config) or artist
     if sentiment == "like":
-        _refresh_artist_top_tracks(artist.spotify_id, config=config)
+        _refresh_artist_top_tracks(artist, config=config)
     else:
-        _delete_artist_top_tracks(artist.spotify_id, config=config)
+        _delete_artist_top_tracks(artist.pandora_id, config=config)
     return artist
 
 
@@ -484,11 +819,14 @@ def remove_song(spotify_id: str, config: HubConfig | None = None) -> None:
         conn.execute("DELETE FROM taste_songs WHERE spotify_id = ?", (spotify_id,))
 
 
-def remove_artist(spotify_id: str, config: HubConfig | None = None) -> None:
+def remove_artist(artist_key: str, config: HubConfig | None = None) -> None:
     ensure_db(config)
+    artist = _get_taste_artist_by_key(artist_key, config=config)
+    if artist is None:
+        return
     with connect(config=config) as conn:
-        conn.execute("DELETE FROM taste_artists WHERE spotify_id = ?", (spotify_id,))
-    _delete_artist_top_tracks(spotify_id, config=config)
+        conn.execute("DELETE FROM taste_artists WHERE id = ?", (artist.id,))
+    _delete_artist_top_tracks(artist.pandora_id, config=config)
 
 
 def list_taste_songs(sentiment: str | None = None, config: HubConfig | None = None) -> list[TasteSong]:
@@ -758,10 +1096,14 @@ def _build_liked_sets(
     liked_danceability = [s.danceability for s in liked_songs if s.danceability is not None]
 
     liked_artist_ids = {s.artist_id for s in liked_songs if s.artist_id}
-    liked_artist_ids.update(a.spotify_id for a in liked_artists)
+    liked_artist_ids.update(
+        a.spotify_id for a in liked_artists if a.spotify_id and is_spotify_catalog_id(a.spotify_id)
+    )
 
     disliked_artist_ids = {s.artist_id for s in disliked_songs if s.artist_id}
-    disliked_artist_ids.update(a.spotify_id for a in disliked_artists)
+    disliked_artist_ids.update(
+        a.spotify_id for a in disliked_artists if a.spotify_id and is_spotify_catalog_id(a.spotify_id)
+    )
 
     liked_years = [s.year for s in liked_songs if s.year is not None]
 
@@ -775,6 +1117,57 @@ def _build_liked_sets(
 
 def _normalize_music_text(value: str) -> str:
     return " ".join(value.lower().split())
+
+
+def _normalize_artist_name(name: str) -> str:
+    normalized = re.sub(r"\s+", " ", name.lower().strip())
+    if normalized.startswith("the "):
+        normalized = normalized[4:]
+    return normalized
+
+
+def _artist_lookup_name(name: str) -> str:
+    cleaned = re.sub(r"\s+explicit$", "", name, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    if cleaned.endswith("(Dance)"):
+        cleaned = cleaned[: -len("(Dance)")].strip()
+    return cleaned
+
+
+_MANUAL_SPOTIFY_ARTIST_IDS: dict[str, str] = {
+    _normalize_artist_name("Dimond Saints"): "38LWle0ChG6k0UHsOnoO75",
+    _normalize_artist_name("Israel Kamakawiwo'ole"): "4ogvuDRerGhZfSf7TtzHlr",
+    _normalize_artist_name("Spafford"): "7fA0IDinGo27lmOeGy6oGV",
+}
+
+
+def resolve_manual_catalog_artist_id(name: str) -> str | None:
+    return _MANUAL_SPOTIFY_ARTIST_IDS.get(_normalize_artist_name(_artist_lookup_name(name)))
+
+
+def resolve_catalog_id_from_sibling_artists(
+    artist: TasteArtist,
+    liked_artists: list[TasteArtist],
+) -> str | None:
+    """Reuse a linked Spotify catalog ID from a closely matching liked artist name."""
+    lookup_name = _artist_lookup_name(artist.name)
+    lookup_norm = _normalize_artist_name(lookup_name)
+
+    best_match: str | None = None
+    best_score = 0
+    for other in liked_artists:
+        if other.pandora_id == artist.pandora_id or not other.spotify_id:
+            continue
+        other_lookup = _artist_lookup_name(other.name)
+        other_norm = _normalize_artist_name(other_lookup)
+        if lookup_norm == other_norm:
+            return other.spotify_id
+        if lookup_norm in other_norm or other_norm in lookup_norm:
+            score = min(len(lookup_norm), len(other_norm))
+            if score > best_score:
+                best_score = score
+                best_match = other.spotify_id
+    return best_match
 
 
 def is_collaboration_artist_name(name: str) -> bool:
@@ -804,7 +1197,7 @@ def remove_collaboration_liked_artists(config: HubConfig | None = None) -> list[
     removed: list[TasteArtist] = []
     for artist in list_liked_artists(config):
         if is_collaboration_artist_name(artist.name):
-            remove_artist(artist.spotify_id, config=config)
+            remove_artist(artist.pandora_id, config=config)
             removed.append(artist)
     return removed
 
@@ -859,6 +1252,8 @@ def _artist_is_liked(artist: ArtistDetails, liked_artists: list[TasteArtist]) ->
     for liked in liked_artists:
         if liked.spotify_id and liked.spotify_id == artist.spotify_id:
             return True
+        if liked.pandora_id == artist.spotify_id:
+            return True
         if _normalize_music_text(liked.name) == norm_name:
             return True
     return False
@@ -891,7 +1286,11 @@ def recommend(
 
     taste_spotify_ids = {s.spotify_id for s in liked_songs + disliked_songs}
 
-    explicit_liked_artist_ids = {a.spotify_id for a in liked_artists}
+    explicit_liked_artist_ids = {
+        a.spotify_id
+        for a in liked_artists
+        if a.spotify_id and is_spotify_catalog_id(a.spotify_id)
+    }
     liked_song_text = [(s.title, s.artist) for s in liked_songs]
 
     weights = config.music_recommender.weights
@@ -927,7 +1326,9 @@ def recommend(
         s.spotify_id for s in liked_songs if is_spotify_catalog_id(s.spotify_id)
     ][:2]
     seed_artist_ids_list = [
-        a.spotify_id for a in liked_artists if is_spotify_catalog_id(a.spotify_id)
+        a.spotify_id
+        for a in liked_artists
+        if a.spotify_id and is_spotify_catalog_id(a.spotify_id)
     ][:3]
     recs = get_spotify_recommendations(
         seed_track_ids=seed_track_ids or None,
@@ -951,7 +1352,7 @@ def recommend(
     stretch_ids.update(recs)
 
     for artist in liked_artists[:5]:
-        if not is_spotify_catalog_id(artist.spotify_id):
+        if not artist.spotify_id or not is_spotify_catalog_id(artist.spotify_id):
             continue
         top = get_artist_top_track_ids(artist.spotify_id, config=config)
         stretch_ids.update(top[:5])
@@ -984,6 +1385,16 @@ def recommend(
     # Score candidates per zone
     # -----------------------------------------------------------------------
     liked_artist_names = {a.name for a in liked_artists}
+    genre_cache: dict[str, list[str]] = {}
+    for artist in liked_artists:
+        if not artist.genres:
+            continue
+        cache_key = (
+            artist.spotify_id
+            if artist.spotify_id and is_spotify_catalog_id(artist.spotify_id)
+            else _normalize_music_text(artist.name)
+        )
+        genre_cache[cache_key] = list(artist.genres)
 
     def _score_track(
         track_id: str,
@@ -1000,6 +1411,15 @@ def recommend(
                 details = get_track_details_with_fallback(track_id, config=config)
             except SpotifyError:
                 return None
+        genres = _resolve_item_genres(
+            artist_id=details.artist_id,
+            artist_name=details.artist,
+            existing_genres=details.genres,
+            config=config,
+            liked_artists=liked_artists,
+            cache=genre_cache,
+        )
+        details = _track_with_genres(details, genres)
         if _track_is_liked(details, liked_songs):
             return None
         if filters.include_year and details.year is not None and (
@@ -1115,7 +1535,12 @@ def recommend(
 
     # --- Artist candidates ---
     candidate_artist_ids: set[str] = set()
-    taste_artist_ids_all = {a.spotify_id for a in liked_artists + disliked_artists}
+    taste_artist_ids_all = {
+        artist_id
+        for artist in liked_artists + disliked_artists
+        for artist_id in (artist.spotify_id, artist.pandora_id)
+        if artist_id
+    }
 
     # Resolve artist IDs for liked songs that are missing them (embed fallback)
     resolved_artist_ids: set[str] = set()
@@ -1139,6 +1564,8 @@ def recommend(
     }
 
     for artist in liked_artists[:5]:
+        if not artist.spotify_id or not is_spotify_catalog_id(artist.spotify_id):
+            continue
         related = get_related_artist_ids(artist.spotify_id, config=config)
         candidate_artist_ids.update(related[:10])
 
@@ -1150,11 +1577,11 @@ def recommend(
     candidate_artist_ids -= taste_artist_ids_all
     candidate_artist_ids -= song_artist_ids
 
-    seed_artist_ids = (
-        resolved_artist_ids
-        | {a.spotify_id for a in liked_artists if is_spotify_catalog_id(a.spotify_id)}
-        | {a.spotify_id for a in disliked_artists if is_spotify_catalog_id(a.spotify_id)}
-    )
+    seed_artist_ids = resolved_artist_ids | {
+        a.spotify_id
+        for a in liked_artists + disliked_artists
+        if a.spotify_id and is_spotify_catalog_id(a.spotify_id)
+    }
 
     collaborator_counts: dict[str, int] = {}
 

@@ -602,6 +602,101 @@ def get_artist_details_with_fallback(
     return fetch_artist_details_from_embed(artist_id)
 
 
+_MUSICBRAINZ_USER_AGENT = "agent-hub/1.0 (music-recommender)"
+
+
+def _clean_artist_genre_lookup_name(name: str) -> str:
+    cleaned = re.sub(r"\s+explicit$", "", name, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    if cleaned.endswith("(Dance)"):
+        cleaned = cleaned[: -len("(Dance)")].strip()
+    return cleaned.replace("'", "ʻ") if "Kamakawiwo" in cleaned else cleaned.replace("'", "")
+
+
+def fetch_artist_genres_from_musicbrainz(artist_name: str, *, limit: int = 8) -> list[str]:
+    """Best-effort Spotify-style genre strings via MusicBrainz tags."""
+    lookup_name = _clean_artist_genre_lookup_name(artist_name)
+    if not lookup_name:
+        return []
+
+    search_url = (
+        "https://musicbrainz.org/ws/2/artist/"
+        f'?query=artist:{urllib.parse.quote(f"\"{lookup_name}\"")}&fmt=json&limit=5'
+    )
+    request = urllib.request.Request(search_url, headers={"User-Agent": _MUSICBRAINZ_USER_AGENT})
+    try:
+        payload = json.loads(urllib.request.urlopen(request, timeout=20).read())
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        return []
+
+    artists = payload.get("artists") or []
+    if not artists:
+        return []
+
+    target = lookup_name.lower().strip()
+    if target.startswith("the "):
+        target = target[4:]
+    mbid = None
+    for artist in artists:
+        candidate = str(artist.get("name") or "").lower().strip()
+        if candidate.startswith("the "):
+            candidate = candidate[4:]
+        if candidate == target:
+            mbid = str(artist["id"])
+            break
+    if mbid is None:
+        mbid = str(artists[0]["id"])
+
+    time.sleep(1.1)
+    detail_url = f"https://musicbrainz.org/ws/2/artist/{mbid}?inc=tags+genres&fmt=json"
+    detail_request = urllib.request.Request(detail_url, headers={"User-Agent": _MUSICBRAINZ_USER_AGENT})
+    try:
+        detail = json.loads(urllib.request.urlopen(detail_request, timeout=20).read())
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        return []
+
+    scored: dict[str, int] = {}
+    for tag in detail.get("tags") or []:
+        name = str(tag.get("name") or "").strip().lower()
+        if name:
+            scored[name] = max(scored.get(name, 0), int(tag.get("count") or 0))
+    for genre in detail.get("genres") or []:
+        name = str(genre.get("name") or "").strip().lower()
+        if name:
+            scored[name] = max(scored.get(name, 0), int(genre.get("count") or 0))
+
+    ranked = sorted(scored.items(), key=lambda item: (-item[1], item[0]))
+    return [name for name, _count in ranked[:limit]]
+
+
+def get_artist_genres_with_fallback(
+    artist_id: str,
+    *,
+    artist_name: str = "",
+    config: HubConfig | None = None,
+    limit: int = 8,
+) -> list[str]:
+    """Return Spotify artist genres, falling back to MusicBrainz tags when needed."""
+    if is_spotify_catalog_id(artist_id):
+        if spotify_web_api_available(config):
+            try:
+                details = get_artist_details(artist_id, config=config)
+                if details.genres:
+                    return details.genres[:limit]
+            except SpotifyError:
+                pass
+        try:
+            details = get_artist_details_with_fallback(artist_id, config=config)
+            if details.genres:
+                return details.genres[:limit]
+            artist_name = artist_name or details.name
+        except SpotifyError:
+            pass
+    if artist_name:
+        return fetch_artist_genres_from_musicbrainz(artist_name, limit=limit)
+    return []
+
+
 def collect_embed_recommendation_tracks(
     liked_songs: list,
     liked_artists: list,
@@ -618,7 +713,8 @@ def collect_embed_recommendation_tracks(
             artist_ids.append(artist_id)
 
     for artist in liked_artists[:max_artists]:
-        add_artist_id(artist.spotify_id)
+        if artist.spotify_id and is_spotify_catalog_id(artist.spotify_id):
+            add_artist_id(artist.spotify_id)
 
     for song in liked_songs:
         if not is_spotify_catalog_id(song.spotify_id):
