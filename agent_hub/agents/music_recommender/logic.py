@@ -43,6 +43,7 @@ from agent_hub.agents.music_recommender.spotify import (
     get_track_details,
     get_track_details_with_fallback,
     is_spotify_catalog_id,
+    map_parallel,
     search_artists,
     search_tracks,
     search_tracks_by_genre,
@@ -776,6 +777,106 @@ def _ensure_track_artist_id(track: TrackDetails, config: HubConfig | None = None
     )
 
 
+def _seed_genre_cache_from_taste(
+    liked_artists: list[TasteArtist],
+    liked_songs: list[TasteSong],
+) -> dict[str, list[str]]:
+    cache: dict[str, list[str]] = {}
+    for artist in liked_artists:
+        if not artist.genres:
+            continue
+        cache_key = (
+            artist.spotify_id
+            if artist.spotify_id and is_spotify_catalog_id(artist.spotify_id)
+            else _normalize_music_text(artist.name)
+        )
+        cache[cache_key] = list(artist.genres)
+    for song in liked_songs:
+        if not song.genres:
+            continue
+        primary = _primary_artist_name(song.artist) or song.artist
+        cache_key = (
+            song.artist_id
+            if song.artist_id and is_spotify_catalog_id(song.artist_id)
+            else _normalize_music_text(primary)
+        )
+        if cache_key not in cache:
+            cache[cache_key] = list(song.genres)
+    return cache
+
+
+def _prefetch_track_details_cache(
+    track_ids: list[str],
+    *,
+    embed_track_cache: dict[str, TrackDetails],
+    wild_card_cache: dict[str, TrackDetails],
+    config: HubConfig | None,
+) -> dict[str, TrackDetails]:
+    details_cache: dict[str, TrackDetails] = {}
+    details_cache.update(embed_track_cache)
+    details_cache.update(wild_card_cache)
+    missing = [track_id for track_id in track_ids if track_id not in details_cache]
+    if missing:
+        def _fetch_one(track_id: str) -> TrackDetails | None:
+            try:
+                return get_track_details_with_fallback(track_id, config=config)
+            except SpotifyError:
+                return None
+
+        for track_id, track in zip(missing, map_parallel(missing, _fetch_one)):
+            if track is not None:
+                details_cache[track_id] = track
+    needing_id = [
+        track
+        for track in details_cache.values()
+        if not track.artist_id and is_spotify_catalog_id(track.spotify_id)
+    ]
+    if needing_id:
+        for track in map_parallel(
+            needing_id,
+            lambda item: _ensure_track_artist_id(item, config=config),
+        ):
+            if track is not None:
+                details_cache[track.spotify_id] = track
+    return details_cache
+
+
+def _prefetch_genres_for_details(
+    details_cache: dict[str, TrackDetails],
+    genre_cache: dict[str, list[str]],
+    *,
+    liked_artists: list[TasteArtist],
+    config: HubConfig | None,
+) -> None:
+    tasks: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for track in details_cache.values():
+        primary = _primary_artist_name(track.artist) or track.artist
+        cache_key = (
+            track.artist_id
+            if track.artist_id and is_spotify_catalog_id(track.artist_id)
+            else _normalize_music_text(primary)
+        )
+        if cache_key in genre_cache or cache_key in seen:
+            continue
+        seen.add(cache_key)
+        tasks.append((track.artist_id, primary))
+
+    def _fetch_genres(task: tuple[str, str]) -> None:
+        artist_id, name = task
+        _resolve_item_genres(
+            artist_id=artist_id,
+            artist_name=name,
+            existing_genres=[],
+            config=config,
+            liked_artists=liked_artists,
+            cache=genre_cache,
+        )
+
+    if tasks:
+        map_parallel(tasks, _fetch_genres, max_workers=4)
+
+
 def _row_to_wishlist_song(row: Any) -> WishlistSong:
     return WishlistSong(
         id=int(row["id"]),
@@ -1468,49 +1569,51 @@ def recommend(
 
     # --- Zone 2 (Stretch): Spotify Web API recs + genre search ---
     stretch_ids: set[str] = set()
+    web_api = spotify_web_api_available(config)
 
-    seed_track_ids = [
-        s.spotify_id for s in liked_songs if is_spotify_catalog_id(s.spotify_id)
-    ][:2]
-    seed_artist_ids_list = [
-        a.spotify_id
-        for a in liked_artists
-        if a.spotify_id and is_spotify_catalog_id(a.spotify_id)
-    ][:3]
-    recs = get_spotify_recommendations(
-        seed_track_ids=seed_track_ids or None,
-        seed_artist_ids=seed_artist_ids_list or None,
-        seed_genres=explicit_genres[:5] if explicit_genres else None,
-        energy_min=(
-            filters.energy_min if filters.include_energy and filters.energy_min > 0 else None
-        ),
-        energy_max=(
-            filters.energy_max if filters.include_energy and filters.energy_max < 1 else None
-        ),
-        valence_min=(
-            filters.valence_min if filters.include_valence and filters.valence_min > 0 else None
-        ),
-        valence_max=(
-            filters.valence_max if filters.include_valence and filters.valence_max < 1 else None
-        ),
-        limit=50,
-        config=config,
-    )
-    stretch_ids.update(recs)
+    if web_api:
+        seed_track_ids = [
+            s.spotify_id for s in liked_songs if is_spotify_catalog_id(s.spotify_id)
+        ][:2]
+        seed_artist_ids_list = [
+            a.spotify_id
+            for a in liked_artists
+            if a.spotify_id and is_spotify_catalog_id(a.spotify_id)
+        ][:3]
+        recs = get_spotify_recommendations(
+            seed_track_ids=seed_track_ids or None,
+            seed_artist_ids=seed_artist_ids_list or None,
+            seed_genres=explicit_genres[:5] if explicit_genres else None,
+            energy_min=(
+                filters.energy_min if filters.include_energy and filters.energy_min > 0 else None
+            ),
+            energy_max=(
+                filters.energy_max if filters.include_energy and filters.energy_max < 1 else None
+            ),
+            valence_min=(
+                filters.valence_min if filters.include_valence and filters.valence_min > 0 else None
+            ),
+            valence_max=(
+                filters.valence_max if filters.include_valence and filters.valence_max < 1 else None
+            ),
+            limit=50,
+            config=config,
+        )
+        stretch_ids.update(recs)
 
-    for artist in liked_artists[:5]:
-        if not artist.spotify_id or not is_spotify_catalog_id(artist.spotify_id):
-            continue
-        top = get_artist_top_track_ids(artist.spotify_id, config=config)
-        stretch_ids.update(top[:5])
-    for song in liked_songs[:3]:
-        if song.artist_id and is_spotify_catalog_id(song.artist_id):
-            top = get_artist_top_track_ids(song.artist_id, config=config)
-            stretch_ids.update(top[:3])
+        for artist in liked_artists[:5]:
+            if not artist.spotify_id or not is_spotify_catalog_id(artist.spotify_id):
+                continue
+            top = get_artist_top_track_ids(artist.spotify_id, config=config)
+            stretch_ids.update(top[:5])
+        for song in liked_songs[:3]:
+            if song.artist_id and is_spotify_catalog_id(song.artist_id):
+                top = get_artist_top_track_ids(song.artist_id, config=config)
+                stretch_ids.update(top[:3])
 
-    for genre in search_genres[:3]:
-        ids = search_tracks_by_genre(genre, limit=10, config=config)
-        stretch_ids.update(ids)
+        for genre in search_genres[:3]:
+            ids = search_tracks_by_genre(genre, limit=10, config=config)
+            stretch_ids.update(ids)
 
     # Remove safe-zone tracks that are in stretch (they already got the safe treatment)
     stretch_ids -= safe_ids
@@ -1532,16 +1635,26 @@ def recommend(
     # Score candidates per zone
     # -----------------------------------------------------------------------
     liked_artist_names = {a.name for a in liked_artists}
-    genre_cache: dict[str, list[str]] = {}
-    for artist in liked_artists:
-        if not artist.genres:
-            continue
-        cache_key = (
-            artist.spotify_id
-            if artist.spotify_id and is_spotify_catalog_id(artist.spotify_id)
-            else _normalize_music_text(artist.name)
-        )
-        genre_cache[cache_key] = list(artist.genres)
+    genre_cache = _seed_genre_cache_from_taste(liked_artists, liked_songs)
+    score_cap = max(filters.song_count * 4, 20)
+    safe_candidate_ids = sorted(safe_ids)[:score_cap]
+    stretch_candidate_ids = sorted(stretch_ids)[:score_cap]
+    wild_candidate_ids = sorted(wild_ids)[:score_cap]
+    all_candidate_ids = list(
+        dict.fromkeys(safe_candidate_ids + stretch_candidate_ids + wild_candidate_ids)
+    )
+    details_cache = _prefetch_track_details_cache(
+        all_candidate_ids,
+        embed_track_cache=embed_track_cache,
+        wild_card_cache=wild_card_cache,
+        config=config,
+    )
+    _prefetch_genres_for_details(
+        details_cache,
+        genre_cache,
+        liked_artists=liked_artists,
+        config=config,
+    )
 
     def _score_track(
         track_id: str,
@@ -1552,13 +1665,9 @@ def recommend(
         if track_id in seen:
             return None
         seen.add(track_id)
-        details = embed_track_cache.get(track_id) or wild_card_cache.get(track_id)
+        details = details_cache.get(track_id)
         if details is None:
-            try:
-                details = get_track_details_with_fallback(track_id, config=config)
-            except SpotifyError:
-                return None
-        details = _ensure_track_artist_id(details, config=config)
+            return None
         genres = resolve_track_genres(
             details,
             config=config,
@@ -1627,21 +1736,21 @@ def recommend(
     seen_track_ids: set[str] = set()
 
     safe_recs: list[SongRecommendation] = []
-    for tid in list(safe_ids)[:80]:
+    for tid in safe_candidate_ids:
         rec = _score_track(tid, "safe", zone_cfg.safe, seen_track_ids)
         if rec:
             safe_recs.append(rec)
     safe_recs.sort(key=lambda x: x.score.total, reverse=True)
 
     stretch_recs: list[SongRecommendation] = []
-    for tid in list(stretch_ids)[:80]:
+    for tid in stretch_candidate_ids:
         rec = _score_track(tid, "stretch", zone_cfg.stretch, seen_track_ids)
         if rec:
             stretch_recs.append(rec)
     stretch_recs.sort(key=lambda x: x.score.total, reverse=True)
 
     wild_recs: list[SongRecommendation] = []
-    for tid in list(wild_ids)[:40]:
+    for tid in wild_candidate_ids:
         rec = _score_track(tid, "wild_card", zone_cfg.wild_card, seen_track_ids)
         if rec:
             wild_recs.append(rec)
@@ -1690,6 +1799,7 @@ def recommend(
 
     # Resolve artist IDs for liked songs that are missing them (embed fallback)
     resolved_artist_ids: set[str] = set()
+    songs_needing_artist_embed: list[str] = []
     for song in liked_songs:
         if song.artist_id and is_spotify_catalog_id(song.artist_id):
             resolved_artist_ids.add(song.artist_id)
@@ -1698,27 +1808,33 @@ def recommend(
             if cached and cached.artist_id:
                 resolved_artist_ids.add(cached.artist_id)
             else:
-                try:
-                    t = fetch_track_details_from_embed(song.spotify_id)
-                    if t.artist_id:
-                        resolved_artist_ids.add(t.artist_id)
-                except SpotifyError:
-                    pass
+                songs_needing_artist_embed.append(song.spotify_id)
+
+    def _embed_song_artist_id(track_id: str) -> str | None:
+        try:
+            track = fetch_track_details_from_embed(track_id)
+        except SpotifyError:
+            return None
+        return track.artist_id or None
+
+    for artist_id in map_parallel(songs_needing_artist_embed, _embed_song_artist_id):
+        if artist_id:
+            resolved_artist_ids.add(artist_id)
 
     song_artist_ids = resolved_artist_ids | {
         s.artist_id for s in liked_songs + disliked_songs if s.artist_id
     }
 
-    for artist in liked_artists[:5]:
-        if not artist.spotify_id or not is_spotify_catalog_id(artist.spotify_id):
-            continue
-        related = get_related_artist_ids(artist.spotify_id, config=config)
-        candidate_artist_ids.update(related[:10])
+    if web_api:
+        for artist in liked_artists[:5]:
+            if not artist.spotify_id or not is_spotify_catalog_id(artist.spotify_id):
+                continue
+            related = get_related_artist_ids(artist.spotify_id, config=config)
+            candidate_artist_ids.update(related[:10])
 
-    # Use resolved artist IDs to find related artists
-    for artist_id in list(resolved_artist_ids)[:8]:
-        related = get_related_artist_ids(artist_id, config=config)
-        candidate_artist_ids.update(related[:8])
+        for artist_id in list(resolved_artist_ids)[:8]:
+            related = get_related_artist_ids(artist_id, config=config)
+            candidate_artist_ids.update(related[:8])
 
     candidate_artist_ids -= taste_artist_ids_all
     candidate_artist_ids -= song_artist_ids
@@ -1741,14 +1857,23 @@ def recommend(
             )
 
         artists_in_cache = {t.artist_id for t in embed_track_cache.values() if t.artist_id}
-        for artist_id in list(resolved_artist_ids)[:20]:
-            if artist_id in artists_in_cache:
-                continue
+        missing_top_track_artists = [
+            artist_id
+            for artist_id in list(resolved_artist_ids)[:20]
+            if artist_id not in artists_in_cache
+        ]
+
+        def _fetch_collab_tracks(artist_id: str) -> list[TrackDetails]:
             try:
-                for track in fetch_artist_top_tracks_from_embed(artist_id):
-                    embed_track_cache[track.spotify_id] = track
+                return fetch_artist_top_tracks_from_embed(artist_id)
             except SpotifyError:
-                pass
+                return []
+
+        for tracks in map_parallel(missing_top_track_artists, _fetch_collab_tracks):
+            if not tracks:
+                continue
+            for track in tracks:
+                embed_track_cache[track.spotify_id] = track
 
         collaborator_counts = collect_collaborator_artist_candidates(
             liked_songs,
@@ -1768,22 +1893,36 @@ def recommend(
             )
 
     artist_related_map: dict[str, list[str]] = {}
-    for candidate_id in list(candidate_artist_ids)[:40]:
-        related = get_related_artist_ids(candidate_id, config=config)
-        artist_related_map[candidate_id] = related
+    candidate_list = sorted(candidate_artist_ids)[:40]
+    if web_api:
+        for candidate_id in candidate_list:
+            artist_related_map[candidate_id] = get_related_artist_ids(candidate_id, config=config)
 
     liked_artist_name_list = [a.name for a in liked_artists]
     liked_song_artist_list = [s.artist for s in liked_songs]
 
+    def _fetch_artist_details(candidate_id: str) -> ArtistDetails | None:
+        try:
+            return get_artist_details_with_fallback(candidate_id, config=config)
+        except SpotifyError:
+            return None
+
+    artist_details_cache: dict[str, ArtistDetails] = {}
+    for candidate_id, details in zip(
+        candidate_list,
+        map_parallel(candidate_list, _fetch_artist_details),
+    ):
+        if details is not None:
+            artist_details_cache[candidate_id] = details
+
     scored_artists: list[ArtistRecommendation] = []
     seen_artist_ids: set[str] = set()
-    for candidate_id in list(candidate_artist_ids)[:40]:
+    for candidate_id in candidate_list:
         if candidate_id in seen_artist_ids:
             continue
         seen_artist_ids.add(candidate_id)
-        try:
-            details = get_artist_details_with_fallback(candidate_id, config=config)
-        except SpotifyError:
+        details = artist_details_cache.get(candidate_id)
+        if details is None:
             continue
         genres = _resolve_item_genres(
             artist_id=details.spotify_id,

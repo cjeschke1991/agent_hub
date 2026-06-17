@@ -7,9 +7,16 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from typing import Callable, TypeVar
 
 from agent_hub.core.config import HubConfig, load_config
+
+T = TypeVar("T")
+R = TypeVar("R")
+
+DEFAULT_PARALLEL_WORKERS = 8
 
 SPOTIFY_API_BASE = "https://api.spotify.com/v1"
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -90,6 +97,34 @@ class ArtistDetails:
 
 _token_cache: dict[str, object] = {"token": "", "expires_at": 0.0}
 _genre_lookup_cache: dict[str, list[str]] = {}
+
+
+def map_parallel(
+    items: list[T],
+    fn: Callable[[T], R],
+    *,
+    max_workers: int = DEFAULT_PARALLEL_WORKERS,
+) -> list[R | None]:
+    """Run *fn* over *items* concurrently, preserving order. Failed items become None."""
+    if not items:
+        return []
+    if len(items) == 1:
+        try:
+            return [fn(items[0])]
+        except Exception:
+            return [None]
+
+    workers = min(max_workers, len(items))
+    results: list[R | None] = [None] * len(items)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_idx = {executor.submit(fn, item): idx for idx, item in enumerate(items)}
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                results[idx] = future.result()
+            except Exception:
+                results[idx] = None
+    return results
 
 
 def _client_credentials(config: HubConfig | None = None) -> tuple[str, str]:
@@ -725,28 +760,67 @@ def collect_embed_recommendation_tracks(
         if artist.spotify_id and is_spotify_catalog_id(artist.spotify_id):
             add_artist_id(artist.spotify_id)
 
+    songs_needing_embed: list[str] = []
     for song in liked_songs:
         if not is_spotify_catalog_id(song.spotify_id):
             continue
         if song.artist_id:
             add_artist_id(song.artist_id)
             continue
-        try:
-            details = fetch_track_details_from_embed(song.spotify_id)
-        except SpotifyError:
-            continue
-        if details.artist_id:
-            add_artist_id(details.artist_id)
+        songs_needing_embed.append(song.spotify_id)
 
-    for artist_id in artist_ids[:max_artists]:
+    def _embed_track_artist_id(track_id: str) -> str | None:
         try:
-            for track in fetch_artist_top_tracks_from_embed(
-                artist_id, limit=tracks_per_artist
-            ):
-                results[track.spotify_id] = track
+            details = fetch_track_details_from_embed(track_id)
         except SpotifyError:
+            return None
+        return details.artist_id or None
+
+    for artist_id in map_parallel(songs_needing_embed, _embed_track_artist_id):
+        if artist_id:
+            add_artist_id(artist_id)
+
+    def _artist_top_tracks(artist_id: str) -> list[TrackDetails]:
+        try:
+            return fetch_artist_top_tracks_from_embed(artist_id, limit=tracks_per_artist)
+        except SpotifyError:
+            return []
+
+    for tracks in map_parallel(artist_ids[:max_artists], _artist_top_tracks):
+        if not tracks:
             continue
+        for track in tracks:
+            results[track.spotify_id] = track
     return results
+
+
+def prefetch_track_details(
+    track_ids: list[str],
+    *,
+    existing: dict[str, TrackDetails] | None = None,
+    config: HubConfig | None = None,
+    max_workers: int = DEFAULT_PARALLEL_WORKERS,
+) -> dict[str, TrackDetails]:
+    """Fetch track metadata for IDs not already present in *existing*."""
+    cache: dict[str, TrackDetails] = dict(existing or {})
+    missing = [
+        track_id
+        for track_id in track_ids
+        if track_id not in cache and is_spotify_catalog_id(track_id)
+    ]
+    if not missing:
+        return cache
+
+    def _fetch_one(track_id: str) -> TrackDetails | None:
+        try:
+            return get_track_details_with_fallback(track_id, config=config)
+        except SpotifyError:
+            return None
+
+    for track_id, track in zip(missing, map_parallel(missing, _fetch_one, max_workers=max_workers)):
+        if track is not None:
+            cache[track_id] = track
+    return cache
 
 
 def collect_embed_candidate_artists(

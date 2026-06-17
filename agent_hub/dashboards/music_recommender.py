@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+
 import streamlit as st
 
 from agent_hub.agents.music_recommender.logic import (
@@ -275,6 +277,17 @@ def _format_genres(genres: list[str]) -> str:
 
 def _render_genres_caption(genres: list[str]) -> None:
     st.caption(f"Genres: {_format_genres(genres)}")
+
+
+def _render_rec_names_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .music-rec-name { font-size: 1.35em; font-weight: 600; line-height: 1.4; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _render_taste_song_list(title: str, songs, sentiment: str) -> None:
@@ -617,6 +630,9 @@ def _render_recommendations() -> None:
     liked_artists_for_genres = list_liked_artists()
     genre_cache: dict[str, list[str]] = {}
 
+    if song_recs or artist_recs:
+        _render_rec_names_css()
+
     _ZONE_BADGE: dict[str, str] = {
         "safe": "🟢 Safe",
         "stretch": "🟡 Stretch",
@@ -634,8 +650,11 @@ def _render_recommendations() -> None:
                 year = item.track.year or "—"
                 zone_label = _ZONE_BADGE.get(getattr(item, "zone", "safe"), "🟢 Safe")
                 st.markdown(
-                    f"**#{idx} {item.track.title}** — {item.track.artist} ({year}) "
-                    f"— **Score: {item.score.total}** &nbsp; `{zone_label}`"
+                    f'<span class="music-rec-name">#{idx} {html.escape(item.track.title)}</span> '
+                    f'— <span class="music-rec-name">{html.escape(item.track.artist)}</span> '
+                    f"({year}) — <strong>Score: {item.score.total}</strong> &nbsp; "
+                    f"<code>{zone_label}</code>",
+                    unsafe_allow_html=True,
                 )
                 st.info(item.reason)
                 _render_genres_caption(
@@ -694,7 +713,9 @@ def _render_recommendations() -> None:
                     st.image(item.artist.image_url, use_container_width=True)
             with cols[1]:
                 st.markdown(
-                    f"**#{idx} {item.artist.name}** — **Score: {item.score.total}**"
+                    f'<span class="music-rec-name">#{idx} {html.escape(item.artist.name)}</span> '
+                    f"— <strong>Score: {item.score.total}</strong>",
+                    unsafe_allow_html=True,
                 )
                 st.info(item.reason)
                 _render_genres_caption(

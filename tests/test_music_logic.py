@@ -312,6 +312,14 @@ def test_recommend_filters_by_selected_genre(music_config, monkeypatch):
         "agent_hub.agents.music_recommender.logic.get_related_artist_ids",
         lambda artist_id, config=None: ["rock-artist", "pop-artist"],
     )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.spotify_web_api_available",
+        lambda config=None: True,
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.fetch_new_release_candidates",
+        lambda **kwargs: [],
+    )
 
     add_song("seed", "like", config=music_config)
     add_artist("liked-artist", "like", config=music_config)
@@ -517,6 +525,14 @@ def test_recommend_includes_out_of_range_year_when_year_excluded(music_config, m
     monkeypatch.setattr(
         "agent_hub.agents.music_recommender.logic.collect_embed_recommendation_tracks",
         lambda *args, **kwargs: {},
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.spotify_web_api_available",
+        lambda config=None: True,
+    )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.fetch_new_release_candidates",
+        lambda **kwargs: [],
     )
 
     add_song("seed", "like", config=music_config)
@@ -849,6 +865,10 @@ def test_recommend_excludes_liked_artist_when_spotify_id_differs(music_config, m
         "agent_hub.agents.music_recommender.logic.fetch_new_release_candidates",
         lambda **kwargs: [],
     )
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.logic.spotify_web_api_available",
+        lambda config=None: True,
+    )
 
     _, artists = recommend(
         MusicRecommendFilters(song_count=5, artist_count=5),
@@ -1149,3 +1169,35 @@ def test_recommend_excludes_song_variation_of_liked_track(music_config, monkeypa
     )
 
     assert {item.track.spotify_id for item in songs} == {"new-song"}
+
+
+def test_map_parallel_preserves_order_and_skips_failures():
+    from agent_hub.agents.music_recommender.spotify import map_parallel
+
+    def fn(value: int) -> int:
+        if value == 2:
+            raise RuntimeError("boom")
+        return value * 10
+
+    assert map_parallel([1, 2, 3], fn) == [10, None, 30]
+
+
+def test_seed_genre_cache_from_taste(music_config):
+    from agent_hub.agents.music_recommender.logic import _seed_genre_cache_from_taste
+
+    artist = _upsert_taste_artist(_fake_artist("artist-1"), "like", config=music_config)
+    from agent_hub.agents.music_recommender.logic import update_taste_artist_genres
+
+    update_taste_artist_genres(artist.pandora_id, ["rock", "jam band"], config=music_config)
+    song = _upsert_taste_song(_fake_track("song-1", artist_id="artist-1"), "like", config=music_config)
+    from agent_hub.agents.music_recommender.logic import update_taste_song_genres
+
+    update_taste_song_genres(song.spotify_id, ["electropop"], config=music_config)
+
+    liked_artists = list_liked_artists(music_config)
+    liked_songs = list_liked_songs(music_config)
+    cache = _seed_genre_cache_from_taste(liked_artists, liked_songs)
+
+    assert cache["artist-1"] == ["rock", "jam band"]
+    assert cache["artist-1"] == cache.get("artist-1")
+    assert "artist-1" in cache
