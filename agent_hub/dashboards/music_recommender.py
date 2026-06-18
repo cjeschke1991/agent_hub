@@ -465,10 +465,11 @@ def _render_recommendations() -> None:
             options=sorted(genre_options),
             default=[],
         )
-    else:
-        st.caption(
-            "Could not load genres from Spotify. Check your credentials and try restarting the app."
-        )
+        if not spotify_web_api_available():
+            st.caption(
+                "Spotify's genre API is unavailable for this developer account — "
+                "showing standard genres and tags from your taste profile."
+            )
 
     energy_col, energy_toggle_col = st.columns([5, 1])
     with energy_toggle_col:
@@ -574,9 +575,10 @@ def _render_recommendations() -> None:
                 elif not spotify_web_api_available():
                     st.session_state.music_recs_status = (
                         "warning",
-                        "No recommendations found. Spotify's Web API is blocked for this developer "
-                        "account, so results come from public embed pages. Add liked songs with "
-                        "real Spotify IDs (via search or playlist import) for best results.",
+                        "No recommendations found. Results come from Spotify embed pages when the "
+                        "Web API is blocked. If you recently ran recommendations, wait a minute and "
+                        "try again (Spotify may rate-limit embed requests). Liked artists with linked "
+                        "Spotify IDs work best.",
                     )
                 else:
                     st.session_state.music_recs_status = (

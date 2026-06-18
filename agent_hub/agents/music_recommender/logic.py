@@ -44,6 +44,7 @@ from agent_hub.agents.music_recommender.spotify import (
     get_track_details_with_fallback,
     is_spotify_catalog_id,
     map_parallel,
+    EMBED_PARALLEL_WORKERS,
     search_artists,
     search_tracks,
     search_tracks_by_genre,
@@ -817,13 +818,19 @@ def _prefetch_track_details_cache(
     details_cache.update(wild_card_cache)
     missing = [track_id for track_id in track_ids if track_id not in details_cache]
     if missing:
+        workers = (
+            EMBED_PARALLEL_WORKERS
+            if not spotify_web_api_available(config)
+            else 8
+        )
+
         def _fetch_one(track_id: str) -> TrackDetails | None:
             try:
                 return get_track_details_with_fallback(track_id, config=config)
             except SpotifyError:
                 return None
 
-        for track_id, track in zip(missing, map_parallel(missing, _fetch_one)):
+        for track_id, track in zip(missing, map_parallel(missing, _fetch_one, max_workers=workers)):
             if track is not None:
                 details_cache[track_id] = track
     needing_id = [
@@ -835,6 +842,7 @@ def _prefetch_track_details_cache(
         for track in map_parallel(
             needing_id,
             lambda item: _ensure_track_artist_id(item, config=config),
+            max_workers=EMBED_PARALLEL_WORKERS,
         ):
             if track is not None:
                 details_cache[track.spotify_id] = track
@@ -1254,10 +1262,15 @@ def search_artists_query(query: str, config: HubConfig | None = None):  # type: 
 
 
 def get_spotify_genres(config: HubConfig | None = None) -> list[str]:
-    """Return Spotify recommendation genre seeds for UI filters."""
+    """Return genre options for UI filters (Spotify seeds plus taste-profile tags)."""
     if not spotify_configured(config):
         raise SpotifyConfigError("Spotify is not configured.")
-    return get_available_genre_seeds(config=config)
+    genres = {g.lower() for g in get_available_genre_seeds(config=config) if g}
+    for artist in list_liked_artists(config):
+        genres.update(g.lower() for g in artist.genres if g)
+    for song in list_liked_songs(config):
+        genres.update(g.lower() for g in song.genres if g)
+    return sorted(genres)
 
 
 def import_liked_songs_from_playlist(
@@ -1552,10 +1565,16 @@ def recommend(
     # Zone 3 – WILD CARD: new-release embed candidates (maximum novelty)
     # -----------------------------------------------------------------------
     embed_track_cache: dict[str, TrackDetails] = {}
+    web_api = spotify_web_api_available(config)
+    embed_max_artists = 12 if not web_api else 8
 
     # --- Zone 1 (Safe): embed top tracks from liked artists ---
     safe_ids: set[str] = set()
-    embed_track_cache = collect_embed_recommendation_tracks(liked_songs, liked_artists)
+    embed_track_cache = collect_embed_recommendation_tracks(
+        liked_songs,
+        liked_artists,
+        max_artists=embed_max_artists,
+    )
     safe_ids.update(embed_track_cache.keys())
 
     # Enrich liked artist IDs from embed-resolved tracks for affinity scoring
@@ -1569,7 +1588,6 @@ def recommend(
 
     # --- Zone 2 (Stretch): Spotify Web API recs + genre search ---
     stretch_ids: set[str] = set()
-    web_api = spotify_web_api_available(config)
 
     if web_api:
         seed_track_ids = [
@@ -1817,7 +1835,11 @@ def recommend(
             return None
         return track.artist_id or None
 
-    for artist_id in map_parallel(songs_needing_artist_embed, _embed_song_artist_id):
+    for artist_id in map_parallel(
+        songs_needing_artist_embed,
+        _embed_song_artist_id,
+        max_workers=EMBED_PARALLEL_WORKERS,
+    ):
         if artist_id:
             resolved_artist_ids.add(artist_id)
 
@@ -1869,7 +1891,11 @@ def recommend(
             except SpotifyError:
                 return []
 
-        for tracks in map_parallel(missing_top_track_artists, _fetch_collab_tracks):
+        for tracks in map_parallel(
+            missing_top_track_artists,
+            _fetch_collab_tracks,
+            max_workers=EMBED_PARALLEL_WORKERS,
+        ):
             if not tracks:
                 continue
             for track in tracks:

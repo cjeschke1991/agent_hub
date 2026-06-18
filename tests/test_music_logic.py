@@ -217,7 +217,20 @@ def test_get_spotify_genres(music_config, monkeypatch):
         "agent_hub.agents.music_recommender.logic.get_available_genre_seeds",
         lambda config=None: ["rock", "pop", "jazz"],
     )
-    assert get_spotify_genres(music_config) == ["rock", "pop", "jazz"]
+    assert get_spotify_genres(music_config) == ["jazz", "pop", "rock"]
+
+
+def test_get_available_genre_seeds_uses_fallback_when_api_blocked(music_config, monkeypatch):
+    from agent_hub.agents.music_recommender.spotify import (
+        SPOTIFY_FALLBACK_GENRE_SEEDS,
+        get_available_genre_seeds,
+    )
+
+    monkeypatch.setattr(
+        "agent_hub.agents.music_recommender.spotify.spotify_web_api_available",
+        lambda config=None, force_check=False: False,
+    )
+    assert get_available_genre_seeds(music_config) == list(SPOTIFY_FALLBACK_GENRE_SEEDS)
 
 
 def test_recommend_filters_by_selected_genre(music_config, monkeypatch):

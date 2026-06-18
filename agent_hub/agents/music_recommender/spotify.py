@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -17,6 +18,8 @@ T = TypeVar("T")
 R = TypeVar("R")
 
 DEFAULT_PARALLEL_WORKERS = 8
+EMBED_PARALLEL_WORKERS = 2
+EMBED_MIN_REQUEST_INTERVAL = 0.45
 
 SPOTIFY_API_BASE = "https://api.spotify.com/v1"
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -97,6 +100,9 @@ class ArtistDetails:
 
 _token_cache: dict[str, object] = {"token": "", "expires_at": 0.0}
 _genre_lookup_cache: dict[str, list[str]] = {}
+_embed_page_cache: dict[str, dict] = {}
+_embed_lock = threading.Lock()
+_embed_last_request_at = 0.0
 
 
 def map_parallel(
@@ -427,12 +433,128 @@ def search_tracks_by_genre(genre: str, limit: int = 20, config: HubConfig | None
         return []
 
 
+# Standard Spotify recommendation genre seeds (used when the Web API is blocked).
+SPOTIFY_FALLBACK_GENRE_SEEDS: tuple[str, ...] = (
+    "acoustic",
+    "afrobeat",
+    "alt-rock",
+    "alternative",
+    "ambient",
+    "blues",
+    "bossanova",
+    "brazil",
+    "breakbeat",
+    "british",
+    "chicago-house",
+    "children",
+    "chill",
+    "classical",
+    "club",
+    "comedy",
+    "country",
+    "dance",
+    "dancehall",
+    "deep-house",
+    "detroit-techno",
+    "disco",
+    "drum-and-bass",
+    "dub",
+    "dubstep",
+    "edm",
+    "electro",
+    "electronic",
+    "emo",
+    "folk",
+    "funk",
+    "garage",
+    "gospel",
+    "goth",
+    "grunge",
+    "guitar",
+    "happy",
+    "hard-rock",
+    "hardcore",
+    "hardstyle",
+    "heavy-metal",
+    "hip-hop",
+    "honky-tonk",
+    "house",
+    "idm",
+    "indie",
+    "indie-pop",
+    "industrial",
+    "j-dance",
+    "j-idol",
+    "j-pop",
+    "j-rock",
+    "jazz",
+    "k-pop",
+    "kids",
+    "latin",
+    "latino",
+    "malay",
+    "mandopop",
+    "metal",
+    "metalcore",
+    "minimal-techno",
+    "new-age",
+    "opera",
+    "pagode",
+    "party",
+    "piano",
+    "pop",
+    "pop-film",
+    "post-dubstep",
+    "power-pop",
+    "progressive-house",
+    "psych-rock",
+    "punk",
+    "punk-rock",
+    "r-n-b",
+    "rainy-day",
+    "reggae",
+    "reggaeton",
+    "rock",
+    "rock-n-roll",
+    "rockabilly",
+    "romance",
+    "sad",
+    "salsa",
+    "samba",
+    "sertanejo",
+    "show-tunes",
+    "singer-songwriter",
+    "ska",
+    "sleep",
+    "songwriter",
+    "soul",
+    "soundtracks",
+    "spanish",
+    "study",
+    "summer",
+    "swedish",
+    "synth-pop",
+    "tango",
+    "techno",
+    "trance",
+    "trip-hop",
+    "turkish",
+    "work-out",
+    "world-music",
+)
+
+
 def get_available_genre_seeds(config: HubConfig | None = None) -> list[str]:
+    if not spotify_web_api_available(config):
+        return list(SPOTIFY_FALLBACK_GENRE_SEEDS)
     try:
         payload = _request("/recommendations/available-genre-seeds", config=config)
-        return list(payload.get("genres", []))
+        genres = list(payload.get("genres", []))
+        if genres:
+            return genres
     except SpotifyError:
-        return []
+        pass
+    return list(SPOTIFY_FALLBACK_GENRE_SEEDS)
 
 
 def parse_playlist_id(value: str) -> str:
@@ -446,13 +568,41 @@ def parse_playlist_id(value: str) -> str:
 
 
 def _fetch_embed_next_data(embed_path: str) -> dict:
-    embed_url = f"https://open.spotify.com/embed/{embed_path.lstrip('/')}"
-    request = urllib.request.Request(embed_url, headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            html = response.read().decode("utf-8", errors="replace")
-    except urllib.error.URLError as exc:
-        raise SpotifyError(f"Could not fetch Spotify embed page: {exc.reason}") from exc
+    path_key = embed_path.lstrip("/")
+    cached = _embed_page_cache.get(path_key)
+    if cached is not None:
+        return cached
+
+    embed_url = f"https://open.spotify.com/embed/{path_key}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    html = ""
+    max_attempts = 4
+    for attempt in range(max_attempts):
+        with _embed_lock:
+            global _embed_last_request_at
+            wait = EMBED_MIN_REQUEST_INTERVAL - (time.time() - _embed_last_request_at)
+            if wait > 0:
+                time.sleep(wait)
+            _embed_last_request_at = time.time()
+
+        request = urllib.request.Request(embed_url, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                html = response.read().decode("utf-8", errors="replace")
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429 and attempt < max_attempts - 1:
+                retry_after = exc.headers.get("Retry-After")
+                delay = float(retry_after) if retry_after else (2**attempt) + 1
+                time.sleep(delay)
+                continue
+            raise SpotifyError(
+                f"Could not fetch Spotify embed page ({exc.code}): {exc.reason}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise SpotifyError(f"Could not fetch Spotify embed page: {exc.reason}") from exc
+    else:
+        raise SpotifyError("Could not fetch Spotify embed page after retries.")
 
     match = re.search(
         r'<script id="__NEXT_DATA__" type="application/json">(.+?)</script>',
@@ -460,7 +610,9 @@ def _fetch_embed_next_data(embed_path: str) -> dict:
     )
     if not match:
         raise SpotifyError("Could not parse Spotify embed page data.")
-    return json.loads(match.group(1))
+    payload = json.loads(match.group(1))
+    _embed_page_cache[path_key] = payload
+    return payload
 
 
 def _track_details_from_embed_item(
@@ -655,9 +807,10 @@ def fetch_artist_genres_from_musicbrainz(artist_name: str, *, limit: int = 8) ->
     if not lookup_name:
         return []
 
+    quoted_name = f'"{lookup_name}"'
     search_url = (
         "https://musicbrainz.org/ws/2/artist/"
-        f'?query=artist:{urllib.parse.quote(f"\"{lookup_name}\"")}&fmt=json&limit=5'
+        f"?query=artist:{urllib.parse.quote(quoted_name)}&fmt=json&limit=5"
     )
     request = urllib.request.Request(search_url, headers={"User-Agent": _MUSICBRAINZ_USER_AGENT})
     try:
@@ -756,7 +909,9 @@ def collect_embed_recommendation_tracks(
         if is_spotify_catalog_id(artist_id) and artist_id not in artist_ids:
             artist_ids.append(artist_id)
 
-    for artist in liked_artists[:max_artists]:
+    for artist in liked_artists:
+        if len(artist_ids) >= max_artists:
+            break
         if artist.spotify_id and is_spotify_catalog_id(artist.spotify_id):
             add_artist_id(artist.spotify_id)
 
@@ -764,10 +919,13 @@ def collect_embed_recommendation_tracks(
     for song in liked_songs:
         if not is_spotify_catalog_id(song.spotify_id):
             continue
-        if song.artist_id:
+        if song.artist_id and is_spotify_catalog_id(song.artist_id):
             add_artist_id(song.artist_id)
             continue
         songs_needing_embed.append(song.spotify_id)
+
+    # Cap per-track embed lookups — liked artists already supply most seed IDs.
+    songs_needing_embed = songs_needing_embed[:10]
 
     def _embed_track_artist_id(track_id: str) -> str | None:
         try:
@@ -776,7 +934,11 @@ def collect_embed_recommendation_tracks(
             return None
         return details.artist_id or None
 
-    for artist_id in map_parallel(songs_needing_embed, _embed_track_artist_id):
+    for artist_id in map_parallel(
+        songs_needing_embed,
+        _embed_track_artist_id,
+        max_workers=EMBED_PARALLEL_WORKERS,
+    ):
         if artist_id:
             add_artist_id(artist_id)
 
@@ -786,7 +948,12 @@ def collect_embed_recommendation_tracks(
         except SpotifyError:
             return []
 
-    for tracks in map_parallel(artist_ids[:max_artists], _artist_top_tracks):
+    fetch_ids = artist_ids[:max_artists]
+    for tracks in map_parallel(
+        fetch_ids,
+        _artist_top_tracks,
+        max_workers=EMBED_PARALLEL_WORKERS,
+    ):
         if not tracks:
             continue
         for track in tracks:
