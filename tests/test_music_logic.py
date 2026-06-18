@@ -4,10 +4,13 @@ import pytest
 
 from agent_hub.agents.music_recommender.logic import (
     MusicRecommendFilters,
+    _artist_dedup_key,
+    _artist_dedup_keys_equivalent,
     _upsert_taste_artist,
     _upsert_taste_song,
     add_artist,
     add_song,
+    deduplicate_liked_artists,
     is_collaboration_artist_name,
     add_artist_to_wishlist,
     add_song_to_wishlist,
@@ -27,8 +30,9 @@ from agent_hub.agents.music_recommender.logic import (
 )
 from agent_hub.agents.music_recommender.scoring import artist_score
 from agent_hub.agents.music_recommender.spotify import ArtistDetails, TrackDetails
-from agent_hub.core.music_db import pandora_artist_id
+from agent_hub.core.music_db import connect, pandora_artist_id
 from agent_hub.core.config import HubConfig, MusicRecommenderWeights, SpotifyConfig
+from agent_hub.core.slices import utc_now_iso
 
 
 def _weights() -> MusicRecommenderWeights:
@@ -774,19 +778,7 @@ def test_link_missing_liked_artist_spotify_ids_from_siblings(music_config):
         config=music_config,
     )
     update_taste_artist_spotify_id(base.pandora_id, "drake-catalog-id", config=music_config)
-    duplicate = _upsert_taste_artist(
-        ArtistDetails(
-            spotify_id="pandora-artist-explicit",
-            name="Drake explicit",
-            genres=[],
-            popularity=0,
-            followers=0,
-            image_url=None,
-        ),
-        "like",
-        config=music_config,
-    )
-    assert duplicate.spotify_id is None
+    _insert_liked_artist_row("pandora-artist-explicit", "Drake explicit", music_config)
 
     linked, remaining = link_missing_liked_artist_spotify_ids(config=music_config)
     assert linked >= 1
@@ -980,6 +972,78 @@ def test_is_collaboration_artist_name_detects_multi_artist_credits():
     assert is_collaboration_artist_name("Artist feat. Guest")
     assert not is_collaboration_artist_name("Andy Frasco & The U.N.")
     assert not is_collaboration_artist_name("Avicii")
+
+
+def _insert_liked_artist_row(pandora_id: str, name: str, config: HubConfig) -> None:
+    from agent_hub.agents.music_recommender.logic import ensure_db
+
+    ensure_db(config)
+    now = utc_now_iso()
+    with connect(config=config) as conn:
+        conn.execute(
+            """
+            INSERT INTO taste_artists
+            (pandora_id, spotify_id, name, genres, popularity, followers, image_url,
+             sentiment, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+            """,
+            (pandora_id, None, name, "[]", 0, 0, None, "like", now, now),
+        )
+
+
+def test_artist_dedup_key_strips_explicit_variants():
+    assert _artist_dedup_key("Party Favor") == _artist_dedup_key("Party Favor explicit")
+    assert _artist_dedup_key("Tropkillaz") == _artist_dedup_key("Tropkillazexplicit")
+    assert _artist_dedup_keys_equivalent(
+        _artist_dedup_key("Widespread Panic"),
+        _artist_dedup_key("Sell Sell Widespread Panic"),
+    )
+
+
+def test_deduplicate_liked_artists(music_config):
+    _insert_liked_artist_row("party-favor", "Party Favor", music_config)
+    _insert_liked_artist_row("party-favor-explicit", "Party Favor explicit", music_config)
+    _insert_liked_artist_row("wsp", "Widespread Panic", music_config)
+    _insert_liked_artist_row("sell-sell-wsp", "Sell Sell Widespread Panic", music_config)
+    _insert_liked_artist_row("tropkillaz", "Tropkillaz", music_config)
+    _insert_liked_artist_row("tropkillaz-explicit", "Tropkillazexplicit", music_config)
+
+    removed = deduplicate_liked_artists(config=music_config)
+    remaining = {artist.name for artist in list_liked_artists(music_config)}
+
+    assert len(removed) == 3
+    assert remaining == {"Party Favor", "Widespread Panic", "Tropkillaz"}
+
+
+def test_upsert_taste_artist_merges_by_dedup_key(music_config):
+    base = _upsert_taste_artist(
+        ArtistDetails(
+            spotify_id="party-favor-base",
+            name="Party Favor",
+            genres=[],
+            popularity=0,
+            followers=0,
+            image_url=None,
+        ),
+        "like",
+        config=music_config,
+    )
+    merged = _upsert_taste_artist(
+        ArtistDetails(
+            spotify_id="party-favor-explicit",
+            name="Party Favor explicit",
+            genres=[],
+            popularity=0,
+            followers=0,
+            image_url=None,
+        ),
+        "like",
+        config=music_config,
+    )
+
+    assert merged.id == base.id
+    assert merged.name == "Party Favor"
+    assert len(list_liked_artists(music_config)) == 1
 
 
 def test_remove_collaboration_liked_artists(music_config, monkeypatch):

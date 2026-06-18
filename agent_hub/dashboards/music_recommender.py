@@ -279,6 +279,73 @@ def _render_genres_caption(genres: list[str]) -> None:
     st.caption(f"Genres: {_format_genres(genres)}")
 
 
+def _render_remove_pending_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .music-remove-pending {
+            background-color: #dc3545 !important;
+            color: #ffffff !important;
+            border: 1px solid #b02a37 !important;
+            border-radius: 0.5rem;
+            padding: 0.375rem 0.75rem;
+            width: 100%;
+            font-size: 1rem;
+            line-height: 1.4;
+            cursor: not-allowed;
+            opacity: 1;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_taste_remove_button(
+    *,
+    button_key: str,
+    item_kind: str,
+    item_id: str,
+    sentiment: str,
+    config=None,
+) -> None:
+    pending = st.session_state.get("music_pending_removal")
+    is_pending = sentiment == "like" and pending == (item_kind, item_id)
+
+    if is_pending:
+        _render_remove_pending_css()
+        st.markdown(
+            '<button class="music-remove-pending" disabled aria-label="Removing">Remove</button>',
+            unsafe_allow_html=True,
+        )
+    elif st.button("Remove", key=button_key):
+        if sentiment == "like":
+            st.session_state["music_pending_removal"] = (item_kind, item_id)
+            st.rerun()
+        elif item_kind == "song":
+            remove_song(item_id)
+            st.rerun()
+        else:
+            remove_artist(item_id, config=config)
+            st.rerun()
+
+
+def _finalize_pending_taste_removal(item_kind: str, item_ids: set[str], config=None) -> None:
+    pending = st.session_state.get("music_pending_removal")
+    if not pending or pending[0] != item_kind or pending[1] not in item_ids:
+        return
+    if not st.session_state.get("music_pending_removal_ack"):
+        st.session_state["music_pending_removal_ack"] = True
+        st.rerun()
+    if item_kind == "song":
+        remove_song(pending[1])
+    else:
+        remove_artist(pending[1], config=config)
+    st.session_state.pop("music_pending_removal", None)
+    st.session_state.pop("music_pending_removal_ack", None)
+    st.rerun()
+
+
 def _render_rec_names_css() -> None:
     st.markdown(
         """
@@ -290,11 +357,30 @@ def _render_rec_names_css() -> None:
     )
 
 
-def _render_taste_song_list(title: str, songs, sentiment: str) -> None:
+def _render_taste_song_stacked_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .music-taste-song-artist { font-size: 0.85em; line-height: 1.3; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_taste_song_list(
+    title: str,
+    songs,
+    sentiment: str,
+    *,
+    stacked_artist: bool = False,
+) -> None:
     st.markdown(f"**{title}**")
     if not songs:
         st.caption("None yet.")
         return
+    if stacked_artist:
+        _render_taste_song_stacked_css()
     for song in songs:
         cols = st.columns([1, 4, 1])
         with cols[0]:
@@ -302,12 +388,24 @@ def _render_taste_song_list(title: str, songs, sentiment: str) -> None:
                 st.image(song.image_url, width=60)
         with cols[1]:
             year = song.year or "—"
-            st.markdown(f"**{song.title}** — {song.artist} ({year})")
+            if stacked_artist:
+                st.markdown(
+                    f"**{html.escape(song.title)}**<br>"
+                    f'<span class="music-taste-song-artist">'
+                    f"{html.escape(song.artist)} ({year})</span>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(f"**{song.title}** — {song.artist} ({year})")
             _render_genres_caption(song.genres)
         with cols[2]:
-            if st.button("Remove", key=f"music_remove_song_{sentiment}_{song.spotify_id}"):
-                remove_song(song.spotify_id)
-                st.rerun()
+            _render_taste_remove_button(
+                button_key=f"music_remove_song_{sentiment}_{song.spotify_id}",
+                item_kind="song",
+                item_id=song.spotify_id,
+                sentiment=sentiment,
+            )
+    _finalize_pending_taste_removal("song", {song.spotify_id for song in songs})
 
 
 def _render_taste_artist_list(title: str, artists, sentiment: str, config) -> None:
@@ -342,9 +440,14 @@ def _render_taste_artist_list(title: str, artists, sentiment: str, config) -> No
                 st.markdown(f"**{artist.name}**")
             _render_genres_caption(artist.genres)
         with cols[2]:
-            if st.button("Remove", key=f"music_remove_artist_{sentiment}_{artist.pandora_id}"):
-                remove_artist(artist.pandora_id, config=config)
-                st.rerun()
+            _render_taste_remove_button(
+                button_key=f"music_remove_artist_{sentiment}_{artist.pandora_id}",
+                item_kind="artist",
+                item_id=artist.pandora_id,
+                sentiment=sentiment,
+                config=config,
+            )
+    _finalize_pending_taste_removal("artist", {artist.pandora_id for artist in artists}, config=config)
 
 
 def _render_my_taste(config) -> None:
@@ -355,7 +458,12 @@ def _render_my_taste(config) -> None:
     with st.container(height=_taste_list_height(songs=True)):
         col1, col2 = st.columns(2)
         with col1:
-            _render_taste_song_list("Liked Songs", list_liked_songs(config), "like")
+            _render_taste_song_list(
+                "Liked Songs",
+                list_liked_songs(config),
+                "like",
+                stacked_artist=True,
+            )
         with col2:
             _render_taste_song_list("Disliked Songs", list_disliked_songs(config), "dislike")
 

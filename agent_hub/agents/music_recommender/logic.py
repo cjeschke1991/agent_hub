@@ -970,6 +970,14 @@ def _upsert_taste_song(details: TrackDetails, sentiment: str, config: HubConfig 
     return _row_to_taste_song(row)
 
 
+def _find_taste_artist_by_dedup_name(conn: Any, name: str) -> Any | None:
+    target_key = _artist_dedup_key(name)
+    for row in conn.execute("SELECT * FROM taste_artists").fetchall():
+        if _artist_dedup_keys_equivalent(_artist_dedup_key(str(row["name"])), target_key):
+            return row
+    return None
+
+
 def _upsert_taste_artist(details: ArtistDetails, sentiment: str, config: HubConfig | None = None) -> TasteArtist:
     if sentiment not in {"like", "dislike"}:
         raise MusicValidationError("Sentiment must be 'like' or 'dislike'.")
@@ -977,17 +985,27 @@ def _upsert_taste_artist(details: ArtistDetails, sentiment: str, config: HubConf
     pandora_id, catalog_id = _artist_ids_from_details(details)
     now = utc_now_iso()
     with connect(config=config) as conn:
-        existing = conn.execute(
-            """
-            SELECT * FROM taste_artists
-            WHERE pandora_id = ? OR (spotify_id IS NOT NULL AND spotify_id = ?)
-               OR lower(trim(name)) = lower(trim(?))
-            LIMIT 1
-            """,
-            (pandora_id, catalog_id or "", details.name),
-        ).fetchone()
+        existing = _find_taste_artist_by_dedup_name(conn, details.name)
+        if existing is None:
+            existing = conn.execute(
+                """
+                SELECT * FROM taste_artists
+                WHERE pandora_id = ? OR (spotify_id IS NOT NULL AND spotify_id = ?)
+                   OR lower(trim(name)) = lower(trim(?))
+                LIMIT 1
+                """,
+                (pandora_id, catalog_id or "", details.name),
+            ).fetchone()
         if existing:
+            canonical_name = _canonical_artist_display_name(
+                [details.name, str(existing["name"])]
+            )
             merged_catalog = catalog_id or existing["spotify_id"]
+            merged_genres = list(
+                dict.fromkeys(
+                    _parse_json_list(existing["genres"]) + list(details.genres)
+                )
+            )
             conn.execute(
                 """
                 UPDATE taste_artists
@@ -998,11 +1016,11 @@ def _upsert_taste_artist(details: ArtistDetails, sentiment: str, config: HubConf
                 (
                     str(existing["pandora_id"]),
                     merged_catalog,
-                    details.name,
-                    _json_dumps(details.genres),
-                    details.popularity,
-                    details.followers,
-                    details.image_url,
+                    canonical_name,
+                    _json_dumps(merged_genres),
+                    max(int(existing["popularity"] or 0), details.popularity),
+                    max(int(existing["followers"] or 0), details.followers),
+                    details.image_url or existing["image_url"],
                     sentiment,
                     now,
                     existing["id"],
@@ -1013,6 +1031,7 @@ def _upsert_taste_artist(details: ArtistDetails, sentiment: str, config: HubConf
                 (existing["id"],),
             ).fetchone()
         else:
+            canonical_name = _canonical_artist_display_name([details.name])
             conn.execute(
                 """
                 INSERT INTO taste_artists
@@ -1023,7 +1042,7 @@ def _upsert_taste_artist(details: ArtistDetails, sentiment: str, config: HubConf
                 (
                     pandora_id,
                     catalog_id,
-                    details.name,
+                    canonical_name,
                     _json_dumps(details.genres),
                     details.popularity,
                     details.followers,
@@ -1389,10 +1408,71 @@ def _normalize_artist_name(name: str) -> str:
 
 def _artist_lookup_name(name: str) -> str:
     cleaned = re.sub(r"\s+explicit$", "", name, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"(?i)explicit$", "", cleaned).strip()
     cleaned = re.sub(r"\s+", " ", cleaned)
     if cleaned.endswith("(Dance)"):
         cleaned = cleaned[: -len("(Dance)")].strip()
     return cleaned
+
+
+def _artist_dedup_key(name: str) -> str:
+    """Normalized key for matching the same artist under variant display names."""
+    return _normalize_artist_name(_artist_lookup_name(name))
+
+
+def _artist_dedup_keys_equivalent(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    if len(left) > len(right) and left.endswith(right) and left[len(left) - len(right) - 1] == " ":
+        return True
+    if len(right) > len(left) and right.endswith(left) and right[len(right) - len(left) - 1] == " ":
+        return True
+    return False
+
+
+def _artist_name_variant_score(name: str, group_names: list[str]) -> tuple[int, int, int, str]:
+    lower = name.lower()
+    explicit = 1 if re.search(r"explicit", lower.replace(" ", "")) else 0
+    norm = _artist_dedup_key(name)
+    prefix_junk = 0
+    for other in group_names:
+        if other == name:
+            continue
+        other_norm = _artist_dedup_key(other)
+        if _artist_dedup_keys_equivalent(norm, other_norm) and len(norm) > len(other_norm):
+            prefix_junk = len(norm.split()) - len(other_norm.split())
+    return (explicit, prefix_junk, len(name.split()), lower)
+
+
+def _canonical_artist_display_name(candidates: list[str]) -> str:
+    return min(candidates, key=lambda name: _artist_name_variant_score(name, candidates))
+
+
+def _group_duplicate_liked_artists(artists: list[TasteArtist]) -> list[list[TasteArtist]]:
+    if not artists:
+        return []
+    keys = [_artist_dedup_key(artist.name) for artist in artists]
+    parent = list(range(len(artists)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        parent[find(left)] = find(right)
+
+    for i, left_key in enumerate(keys):
+        for j in range(i + 1, len(keys)):
+            if _artist_dedup_keys_equivalent(left_key, keys[j]):
+                union(i, j)
+
+    grouped: dict[int, list[TasteArtist]] = {}
+    for index, artist in enumerate(artists):
+        root = find(index)
+        grouped.setdefault(root, []).append(artist)
+    return [group for group in grouped.values() if len(group) > 1]
 
 
 _MANUAL_SPOTIFY_ARTIST_IDS: dict[str, str] = {
@@ -1460,6 +1540,100 @@ def remove_collaboration_liked_artists(config: HubConfig | None = None) -> list[
         if is_collaboration_artist_name(artist.name):
             remove_artist(artist.pandora_id, config=config)
             removed.append(artist)
+    return removed
+
+
+def deduplicate_liked_artists(config: HubConfig | None = None) -> list[TasteArtist]:
+    """Merge liked artists that are the same act under variant names (e.g. explicit tags)."""
+    ensure_db(config)
+    removed: list[TasteArtist] = []
+    groups = _group_duplicate_liked_artists(list_liked_artists(config))
+    now = utc_now_iso()
+
+    for group in groups:
+        group_names = [artist.name for artist in group]
+        canonical_name = _canonical_artist_display_name(group_names)
+        keeper = min(
+            group,
+            key=lambda artist: (
+                0 if artist.name == canonical_name else 1,
+                _artist_name_variant_score(artist.name, group_names),
+                artist.id,
+            ),
+        )
+        merged_genres = list(
+            dict.fromkeys(genre for artist in group for genre in artist.genres if genre)
+        )
+        merged_spotify_id = next((artist.spotify_id for artist in group if artist.spotify_id), None)
+        merged_popularity = max(artist.popularity for artist in group)
+        merged_followers = max(artist.followers for artist in group)
+        merged_image = next((artist.image_url for artist in group if artist.image_url), None)
+
+        with connect(config=config) as conn:
+            conn.execute(
+                """
+                UPDATE taste_artists
+                SET name = ?, spotify_id = ?, genres = ?, popularity = ?, followers = ?,
+                    image_url = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    canonical_name,
+                    merged_spotify_id,
+                    _json_dumps(merged_genres),
+                    merged_popularity,
+                    merged_followers,
+                    merged_image,
+                    now,
+                    keeper.id,
+                ),
+            )
+
+        keeper_tracks = list_artist_top_tracks(keeper.pandora_id, config=config)
+        for duplicate in group:
+            if duplicate.pandora_id == keeper.pandora_id:
+                continue
+            if not keeper_tracks:
+                duplicate_tracks = list_artist_top_tracks(duplicate.pandora_id, config=config)
+                if duplicate_tracks:
+                    _save_artist_top_tracks(
+                        keeper.pandora_id,
+                        [
+                            TrackDetails(
+                                spotify_id=track.spotify_id,
+                                title=track.title,
+                                artist=track.artist,
+                                artist_id=merged_spotify_id or "",
+                                album=track.album,
+                                year=track.year,
+                                genres=[],
+                                energy=None,
+                                valence=None,
+                                danceability=None,
+                                tempo=None,
+                                popularity=0,
+                                duration_ms=None,
+                                image_url=track.image_url,
+                                preview_url=track.preview_url,
+                            )
+                            for track in duplicate_tracks
+                        ],
+                        config=config,
+                    )
+                    keeper_tracks = list_artist_top_tracks(keeper.pandora_id, config=config)
+            if duplicate.name != canonical_name:
+                with connect(config=config) as conn:
+                    conn.execute(
+                        """
+                        UPDATE taste_songs
+                        SET artist = ?, updated_at = ?
+                        WHERE sentiment = 'like' AND artist = ?
+                        """,
+                        (canonical_name, now, duplicate.name),
+                    )
+            remove_artist(duplicate.pandora_id, config=config)
+            removed.append(duplicate)
+
     return removed
 
 
