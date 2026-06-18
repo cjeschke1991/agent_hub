@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import html
+from collections import Counter
+from typing import Any
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -474,6 +476,218 @@ def _render_rec_names_css() -> None:
     )
 
 
+def _aggregate_top_genres(
+    liked_songs: list[Any],
+    liked_artists: list[Any],
+    *,
+    limit: int = 10,
+) -> list[str]:
+    counts: Counter[str] = Counter()
+    display: dict[str, str] = {}
+    for item in liked_songs:
+        for genre in item.genres:
+            normalized = genre.strip().lower()
+            if not normalized:
+                continue
+            counts[normalized] += 1
+            display.setdefault(normalized, genre.strip())
+    for item in liked_artists:
+        for genre in item.genres:
+            normalized = genre.strip().lower()
+            if not normalized:
+                continue
+            counts[normalized] += 1
+            display.setdefault(normalized, genre.strip())
+    ranked = sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
+    return [display[key] for key, _ in ranked[:limit]]
+
+
+def _render_taste_hero_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .music-taste-hero {
+            padding: 1.1rem 1.25rem;
+            margin: 0 0 1.25rem;
+            border-radius: 0.75rem;
+            border: 1px solid rgba(49, 51, 63, 0.12);
+        }
+        [data-theme="light"] .music-taste-hero {
+            background: linear-gradient(135deg, rgba(29, 185, 84, 0.12) 0%, rgba(30, 144, 255, 0.08) 100%);
+        }
+        [data-theme="dark"] .music-taste-hero {
+            background: linear-gradient(135deg, rgba(29, 185, 84, 0.18) 0%, rgba(30, 144, 255, 0.12) 100%);
+            border-color: rgba(250, 250, 250, 0.12);
+        }
+        .music-taste-hero-title {
+            font-size: 1.35rem;
+            font-weight: 700;
+            margin: 0 0 0.75rem;
+            line-height: 1.3;
+        }
+        .music-taste-stat-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-bottom: 0.85rem;
+        }
+        .music-taste-stat {
+            display: inline-flex;
+            align-items: baseline;
+            gap: 0.35rem;
+            padding: 0.35rem 0.65rem;
+            border-radius: 999px;
+            font-size: 0.95rem;
+            font-weight: 700;
+            line-height: 1.2;
+        }
+        .music-taste-stat small {
+            font-size: 0.78rem;
+            font-weight: 600;
+            opacity: 0.85;
+        }
+        .music-taste-stat-liked {
+            background: rgba(29, 185, 84, 0.18);
+            color: #128043;
+        }
+        [data-theme="dark"] .music-taste-stat-liked {
+            color: #6de89a;
+        }
+        .music-taste-stat-disliked {
+            background: rgba(220, 53, 69, 0.14);
+            color: #a52834;
+        }
+        [data-theme="dark"] .music-taste-stat-disliked {
+            color: #f28b99;
+        }
+        .music-taste-genre-label {
+            display: block;
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            opacity: 0.65;
+            margin-bottom: 0.45rem;
+        }
+        .music-taste-genre-pills {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem;
+        }
+        .music-taste-genre-pill {
+            display: inline-block;
+            padding: 0.2rem 0.55rem;
+            border-radius: 999px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            line-height: 1.3;
+        }
+        [data-theme="light"] .music-taste-genre-pill {
+            background: rgba(255, 255, 255, 0.75);
+            border: 1px solid rgba(49, 51, 63, 0.12);
+            color: #31333F;
+        }
+        [data-theme="dark"] .music-taste-genre-pill {
+            background: rgba(38, 39, 48, 0.85);
+            border: 1px solid rgba(250, 250, 250, 0.12);
+            color: #FAFAFA;
+        }
+        .music-taste-genre-empty {
+            font-size: 0.85rem;
+            opacity: 0.65;
+            margin: 0;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_taste_hero(
+    liked_songs: list[Any],
+    disliked_songs: list[Any],
+    liked_artists: list[Any],
+    disliked_artists: list[Any],
+) -> None:
+    _render_taste_hero_css()
+    top_genres = _aggregate_top_genres(liked_songs, liked_artists)
+    stats = [
+        ("liked", len(liked_songs), "liked songs"),
+        ("liked", len(liked_artists), "liked artists"),
+        ("disliked", len(disliked_songs), "disliked songs"),
+        ("disliked", len(disliked_artists), "disliked artists"),
+    ]
+    stat_html = "".join(
+        f'<span class="music-taste-stat music-taste-stat-{kind}">'
+        f"{count} <small>{html.escape(label)}</small></span>"
+        for kind, count, label in stats
+    )
+    if top_genres:
+        genre_html = (
+            '<div class="music-taste-genre-pills">'
+            + "".join(
+                f'<span class="music-taste-genre-pill">{html.escape(genre)}</span>'
+                for genre in top_genres
+            )
+            + "</div>"
+        )
+    else:
+        genre_html = (
+            '<p class="music-taste-genre-empty">'
+            "Genres will appear as your library grows."
+            "</p>"
+        )
+    st.markdown(
+        f"""
+        <div class="music-taste-hero">
+            <div class="music-taste-hero-title">Your Taste Profile</div>
+            <div class="music-taste-stat-row">{stat_html}</div>
+            <span class="music-taste-genre-label">Top genres</span>
+            {genre_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_taste_panel_css() -> None:
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.music-taste-panel-marker-liked) {
+            background: rgba(29, 185, 84, 0.06);
+            border-left: 3px solid #1db954;
+            border-radius: 0.5rem;
+        }
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.music-taste-panel-marker-disliked) {
+            background: rgba(220, 53, 69, 0.05);
+            border-left: 3px solid #dc3545;
+            border-radius: 0.5rem;
+        }
+        [data-theme="dark"] div[data-testid="stVerticalBlockBorderWrapper"]:has(.music-taste-panel-marker-liked) {
+            background: rgba(29, 185, 84, 0.1);
+        }
+        [data-theme="dark"] div[data-testid="stVerticalBlockBorderWrapper"]:has(.music-taste-panel-marker-disliked) {
+            background: rgba(220, 53, 69, 0.08);
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_taste_panel_marker(sentiment: str) -> None:
+    marker_class = (
+        "music-taste-panel-marker-liked"
+        if sentiment == "like"
+        else "music-taste-panel-marker-disliked"
+    )
+    st.markdown(
+        f'<div class="{marker_class}" style="display:none" aria-hidden="true"></div>',
+        unsafe_allow_html=True,
+    )
+
+
 def _render_taste_section_title_css() -> None:
     st.markdown(
         """
@@ -655,18 +869,25 @@ def _render_taste_artist_list(
 
 
 def _render_my_taste(config) -> None:
-    st.subheader("My Taste Profile")
+    liked_songs = list_liked_songs(config)
+    disliked_songs = list_disliked_songs(config)
+    liked_artists = list_liked_artists(config)
+    disliked_artists = list_disliked_artists(config)
+
+    _render_taste_panel_css()
+    _render_taste_column_title_css()
+    _render_taste_hero(liked_songs, disliked_songs, liked_artists, disliked_artists)
     st.caption("Songs and artists you've liked or disliked to personalize recommendations.")
 
-    _render_taste_column_title_css()
     _render_taste_section_title("Songs", font_size="calc(1.5em + 4pt)")
     col1, col2 = st.columns(2)
     with col1:
         _render_taste_column_title("Liked Songs")
         with st.container(height=_taste_list_height(songs=True)):
+            _render_taste_panel_marker("like")
             _render_taste_song_list(
                 "Liked Songs",
-                list_liked_songs(config),
+                liked_songs,
                 "like",
                 stacked_artist=True,
                 show_letter_index=True,
@@ -675,9 +896,10 @@ def _render_my_taste(config) -> None:
     with col2:
         _render_taste_column_title("Disliked Songs")
         with st.container(height=_taste_list_height(songs=True)):
+            _render_taste_panel_marker("dislike")
             _render_taste_song_list(
                 "Disliked Songs",
-                list_disliked_songs(config),
+                disliked_songs,
                 "dislike",
                 show_title=False,
             )
@@ -689,9 +911,10 @@ def _render_my_taste(config) -> None:
     with col3:
         _render_taste_column_title("Liked Artists")
         with st.container(height=_taste_list_height(songs=False)):
+            _render_taste_panel_marker("like")
             _render_taste_artist_list(
                 "Liked Artists",
-                list_liked_artists(config),
+                liked_artists,
                 "like",
                 config,
                 show_letter_index=True,
@@ -700,9 +923,10 @@ def _render_my_taste(config) -> None:
     with col4:
         _render_taste_column_title("Disliked Artists")
         with st.container(height=_taste_list_height(songs=False)):
+            _render_taste_panel_marker("dislike")
             _render_taste_artist_list(
                 "Disliked Artists",
-                list_disliked_artists(config),
+                disliked_artists,
                 "dislike",
                 config,
                 show_title=False,
