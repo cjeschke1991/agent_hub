@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 from agent_hub.agents.music_recommender.logic import (
     MusicRecommendFilters,
@@ -275,6 +276,122 @@ def _format_genres(genres: list[str]) -> str:
     return ", ".join(genres) if genres else "—"
 
 
+def _sort_letter(label: str) -> str:
+    stripped = label.strip()
+    if not stripped:
+        return "#"
+    first = stripped[0].upper()
+    return first if first.isalpha() else "#"
+
+
+def _group_by_letter(items, label_fn):
+    groups: list[tuple[str, list]] = []
+    current_letter: str | None = None
+    for item in items:
+        letter = _sort_letter(label_fn(item))
+        if letter != current_letter:
+            current_letter = letter
+            groups.append((letter, []))
+        groups[-1][1].append(item)
+    return groups
+
+
+def _render_letter_index_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .music-letter-header {
+            padding: 0.15rem 0.5rem;
+            margin: 0.5rem 0 0.35rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            opacity: 0.55;
+        }
+        .music-letter-spy-bar {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            padding: 0.35rem 0.65rem;
+            margin: 0 0 0.5rem;
+            font-size: 1.1rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            border-bottom: 1px solid rgba(49, 51, 63, 0.15);
+        }
+        [data-theme="light"] .music-letter-spy-bar {
+            background: rgba(255, 255, 255, 0.97);
+            color: #31333F;
+        }
+        [data-theme="dark"] .music-letter-spy-bar {
+            background: rgba(38, 39, 48, 0.97);
+            color: #FAFAFA;
+            border-bottom-color: rgba(250, 250, 250, 0.15);
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_letter_header(letter: str, scope_id: str) -> None:
+    st.markdown(
+        f'<div class="music-letter-header" id="music-letter-{scope_id}-{letter}" '
+        f'data-letter="{html.escape(letter)}">{html.escape(letter)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_letter_scroll_spy(scope_id: str) -> None:
+    components.html(
+        f"""
+        <script>
+        (() => {{
+            const doc = window.parent.document;
+            const scope = {scope_id!r};
+            const barClass = "music-letter-spy-bar-" + scope;
+            if (doc.querySelector("." + barClass)) return;
+
+            const headers = [...doc.querySelectorAll('[id^="music-letter-' + scope + '-"]')];
+            if (!headers.length) return;
+
+            let scrollEl = headers[0].parentElement;
+            while (scrollEl && scrollEl !== doc.body) {{
+                const style = window.parent.getComputedStyle(scrollEl);
+                if (/(auto|scroll)/.test(style.overflowY)) break;
+                scrollEl = scrollEl.parentElement;
+            }}
+            if (!scrollEl) return;
+
+            const letterFrom = (el) => el.dataset.letter || el.textContent.trim();
+
+            const bar = doc.createElement("div");
+            bar.className = "music-letter-spy-bar " + barClass;
+            bar.textContent = letterFrom(headers[0]);
+            scrollEl.insertBefore(bar, scrollEl.firstChild);
+
+            const update = () => {{
+                const rootTop = scrollEl.getBoundingClientRect().top + 4;
+                let active = headers[0];
+                for (const header of headers) {{
+                    if (header.getBoundingClientRect().top <= rootTop) {{
+                        active = header;
+                    }}
+                }}
+                bar.textContent = letterFrom(active);
+            }};
+
+            scrollEl.addEventListener("scroll", update, {{ passive: true }});
+            window.parent.addEventListener("resize", update, {{ passive: true }});
+            update();
+        }})();
+        </script>
+        """,
+        height=0,
+    )
+
+
 def _render_genres_caption(genres: list[str]) -> None:
     st.caption(f"Genres: {_format_genres(genres)}")
 
@@ -357,6 +474,55 @@ def _render_rec_names_css() -> None:
     )
 
 
+def _render_taste_section_title_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .music-taste-section-title {
+            text-align: center;
+            font-size: 1.5em;
+            font-weight: 700;
+            margin: 0.25rem 0 0.75rem;
+            line-height: 1.3;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_taste_column_title_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .music-taste-column-title {
+            text-align: center;
+            font-weight: 700;
+            margin: 0 0 0.5rem;
+            line-height: 1.3;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_taste_column_title(label: str) -> None:
+    st.markdown(
+        f'<p class="music-taste-column-title">{html.escape(label)}</p>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_taste_section_title(label: str, *, font_size: str = "1.5em") -> None:
+    _render_taste_section_title_css()
+    st.markdown(
+        f'<p class="music-taste-section-title" style="font-size: {font_size};">'
+        f"{html.escape(label)}</p>",
+        unsafe_allow_html=True,
+    )
+
+
 def _render_taste_song_stacked_css() -> None:
     st.markdown(
         """
@@ -374,79 +540,117 @@ def _render_taste_song_list(
     sentiment: str,
     *,
     stacked_artist: bool = False,
+    show_letter_index: bool = False,
+    show_title: bool = True,
 ) -> None:
-    st.markdown(f"**{title}**")
+    if show_title:
+        st.markdown(f"**{title}**")
     if not songs:
         st.caption("None yet.")
         return
     if stacked_artist:
         _render_taste_song_stacked_css()
-    for song in songs:
-        cols = st.columns([1, 4, 1])
-        with cols[0]:
-            if song.image_url:
-                st.image(song.image_url, width=60)
-        with cols[1]:
-            year = song.year or "—"
-            if stacked_artist:
-                st.markdown(
-                    f"**{html.escape(song.title)}**<br>"
-                    f'<span class="music-taste-song-artist">'
-                    f"{html.escape(song.artist)} ({year})</span>",
-                    unsafe_allow_html=True,
+    if show_letter_index:
+        _render_letter_index_css()
+    scope_id = f"song-{sentiment}"
+    song_groups = (
+        _group_by_letter(songs, lambda song: song.title)
+        if show_letter_index
+        else [(None, songs)]
+    )
+    for letter, group_songs in song_groups:
+        if letter is not None:
+            _render_letter_header(letter, scope_id)
+        for song in group_songs:
+            cols = st.columns([1, 4, 1])
+            with cols[0]:
+                if song.image_url:
+                    st.image(song.image_url, width=60)
+            with cols[1]:
+                year = song.year or "—"
+                if stacked_artist:
+                    st.markdown(
+                        f"**{html.escape(song.title)}**<br>"
+                        f'<span class="music-taste-song-artist">'
+                        f"{html.escape(song.artist)} ({year})</span>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(f"**{song.title}** — {song.artist} ({year})")
+                _render_genres_caption(song.genres)
+            with cols[2]:
+                _render_taste_remove_button(
+                    button_key=f"music_remove_song_{sentiment}_{song.spotify_id}",
+                    item_kind="song",
+                    item_id=song.spotify_id,
+                    sentiment=sentiment,
                 )
-            else:
-                st.markdown(f"**{song.title}** — {song.artist} ({year})")
-            _render_genres_caption(song.genres)
-        with cols[2]:
-            _render_taste_remove_button(
-                button_key=f"music_remove_song_{sentiment}_{song.spotify_id}",
-                item_kind="song",
-                item_id=song.spotify_id,
-                sentiment=sentiment,
-            )
+    if show_letter_index:
+        _render_letter_scroll_spy(scope_id)
     _finalize_pending_taste_removal("song", {song.spotify_id for song in songs})
 
 
-def _render_taste_artist_list(title: str, artists, sentiment: str, config) -> None:
-    st.markdown(f"**{title}**")
+def _render_taste_artist_list(
+    title: str,
+    artists,
+    sentiment: str,
+    config,
+    *,
+    show_letter_index: bool = False,
+    show_title: bool = True,
+) -> None:
+    if show_title:
+        st.markdown(f"**{title}**")
     if not artists:
         st.caption("None yet.")
         return
-    for artist in artists:
-        cols = st.columns([1, 4, 1])
-        with cols[0]:
-            if artist.image_url:
-                st.image(artist.image_url, width=60)
-        with cols[1]:
-            if sentiment == "like":
-                with st.expander(artist.name, expanded=False):
-                    top_tracks = list_artist_top_tracks(artist.pandora_id, config=config)
-                    if not top_tracks:
-                        st.caption("No top tracks stored yet.")
-                        if artist.spotify_id and st.button(
-                            "Fetch top tracks",
-                            key=f"music_fetch_top_tracks_{artist.pandora_id}",
-                        ):
-                            refresh_artist_top_tracks(artist.pandora_id, config=config)
-                            st.rerun()
-                    else:
-                        for track in top_tracks:
-                            year = track.year or "—"
-                            st.markdown(f"**{track.rank}. {track.title}** ({year})")
-                            if track.album:
-                                st.caption(track.album)
-            else:
-                st.markdown(f"**{artist.name}**")
-            _render_genres_caption(artist.genres)
-        with cols[2]:
-            _render_taste_remove_button(
-                button_key=f"music_remove_artist_{sentiment}_{artist.pandora_id}",
-                item_kind="artist",
-                item_id=artist.pandora_id,
-                sentiment=sentiment,
-                config=config,
-            )
+    if show_letter_index:
+        _render_letter_index_css()
+    scope_id = f"artist-{sentiment}"
+    artist_groups = (
+        _group_by_letter(artists, lambda artist: artist.name)
+        if show_letter_index
+        else [(None, artists)]
+    )
+    for letter, group_artists in artist_groups:
+        if letter is not None:
+            _render_letter_header(letter, scope_id)
+        for artist in group_artists:
+            cols = st.columns([1, 4, 1])
+            with cols[0]:
+                if artist.image_url:
+                    st.image(artist.image_url, width=60)
+            with cols[1]:
+                if sentiment == "like":
+                    with st.expander(artist.name, expanded=False):
+                        top_tracks = list_artist_top_tracks(artist.pandora_id, config=config)
+                        if not top_tracks:
+                            st.caption("No top tracks stored yet.")
+                            if artist.spotify_id and st.button(
+                                "Fetch top tracks",
+                                key=f"music_fetch_top_tracks_{artist.pandora_id}",
+                            ):
+                                refresh_artist_top_tracks(artist.pandora_id, config=config)
+                                st.rerun()
+                        else:
+                            for track in top_tracks:
+                                year = track.year or "—"
+                                st.markdown(f"**{track.rank}. {track.title}** ({year})")
+                                if track.album:
+                                    st.caption(track.album)
+                else:
+                    st.markdown(f"**{artist.name}**")
+                _render_genres_caption(artist.genres)
+            with cols[2]:
+                _render_taste_remove_button(
+                    button_key=f"music_remove_artist_{sentiment}_{artist.pandora_id}",
+                    item_kind="artist",
+                    item_id=artist.pandora_id,
+                    sentiment=sentiment,
+                    config=config,
+                )
+    if show_letter_index:
+        _render_letter_scroll_spy(scope_id)
     _finalize_pending_taste_removal("artist", {artist.pandora_id for artist in artists}, config=config)
 
 
@@ -454,28 +658,55 @@ def _render_my_taste(config) -> None:
     st.subheader("My Taste Profile")
     st.caption("Songs and artists you've liked or disliked to personalize recommendations.")
 
-    st.markdown("**Songs**")
-    with st.container(height=_taste_list_height(songs=True)):
-        col1, col2 = st.columns(2)
-        with col1:
+    _render_taste_column_title_css()
+    _render_taste_section_title("Songs", font_size="calc(1.5em + 4pt)")
+    col1, col2 = st.columns(2)
+    with col1:
+        _render_taste_column_title("Liked Songs")
+        with st.container(height=_taste_list_height(songs=True)):
             _render_taste_song_list(
                 "Liked Songs",
                 list_liked_songs(config),
                 "like",
                 stacked_artist=True,
+                show_letter_index=True,
+                show_title=False,
             )
-        with col2:
-            _render_taste_song_list("Disliked Songs", list_disliked_songs(config), "dislike")
+    with col2:
+        _render_taste_column_title("Disliked Songs")
+        with st.container(height=_taste_list_height(songs=True)):
+            _render_taste_song_list(
+                "Disliked Songs",
+                list_disliked_songs(config),
+                "dislike",
+                show_title=False,
+            )
 
     st.divider()
 
-    st.markdown("**Artists**")
-    with st.container(height=_taste_list_height(songs=False)):
-        col3, col4 = st.columns(2)
-        with col3:
-            _render_taste_artist_list("Liked Artists", list_liked_artists(config), "like", config)
-        with col4:
-            _render_taste_artist_list("Disliked Artists", list_disliked_artists(config), "dislike", config)
+    _render_taste_section_title("Artists")
+    col3, col4 = st.columns(2)
+    with col3:
+        _render_taste_column_title("Liked Artists")
+        with st.container(height=_taste_list_height(songs=False)):
+            _render_taste_artist_list(
+                "Liked Artists",
+                list_liked_artists(config),
+                "like",
+                config,
+                show_letter_index=True,
+                show_title=False,
+            )
+    with col4:
+        _render_taste_column_title("Disliked Artists")
+        with st.container(height=_taste_list_height(songs=False)):
+            _render_taste_artist_list(
+                "Disliked Artists",
+                list_disliked_artists(config),
+                "dislike",
+                config,
+                show_title=False,
+            )
 
 
 def _render_wishlist(config) -> None:
