@@ -5,10 +5,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent_hub.agents.gmail_assistant.analysis_cache import (
+    load_all_cached_results,
     load_cached_analysis,
     result_from_cache,
     save_cached_analysis,
 )
+from agent_hub.agents.gmail_assistant.message_cache import save_cached_message
 from agent_hub.agents.gmail_assistant.auth import get_gmail_service
 from agent_hub.agents.gmail_assistant.gmail import RawEmail, fetch_emails, send_email, trash_email
 from agent_hub.agents.gmail_assistant.llm import CATEGORIES, EmailResult, analyze_emails_batch
@@ -46,7 +48,16 @@ def _split_cached_emails(
     for email in emails:
         entry = load_cached_analysis(email.msg_id, config)
         if entry:
-            cached_results.append(result_from_cache(entry, email))
+            # Build result, merging live email headers into any old cache entries
+            # that were saved before header fields were stored in the JSON.
+            merged = {**entry, "msg_id": email.msg_id, "subject": email.subject,
+                      "sender": email.sender, "date": email.date, "snippet": email.snippet}
+            result = result_from_cache(merged)
+            if result is not None:
+                # Persist header fields so future disk-only loads skip Gmail entirely.
+                if not entry.get("subject"):
+                    save_cached_analysis(result, config)
+                cached_results.append(result)
         else:
             to_analyze.append(email)
     return cached_results, to_analyze
@@ -61,13 +72,17 @@ def load_and_analyze_inbox(
     prefs = load_prefs(cfg)
     pref_context = prefs_to_context(prefs)
 
-    raw_emails = fetch_emails(service, max_results=cfg.gmail.max_emails, label=label)
+    raw_emails = fetch_emails(service, max_results=cfg.gmail.max_emails, label=label, config=cfg)
     cached_results, to_analyze = _split_cached_emails(raw_emails, cfg)
 
     newly_analyzed = analyze_emails_batch(to_analyze, pref_context, prefs=prefs)
     for result in newly_analyzed:
         if not result.summary.startswith("[Analysis failed:"):
             save_cached_analysis(result, cfg)
+            save_cached_message(result.raw, cfg)
+
+    for result in cached_results:
+        save_cached_message(result.raw, cfg)
 
     analyzed_by_id = {r.msg_id: r for r in cached_results + newly_analyzed}
     analyzed = [analyzed_by_id[email.msg_id] for email in raw_emails if email.msg_id in analyzed_by_id]
@@ -93,6 +108,44 @@ def load_and_analyze_inbox(
         priority=priority,
         cached_count=len(cached_results),
         analyzed_count=len(newly_analyzed),
+    )
+    save_inbox_snapshot(summary, cfg)
+    return summary
+
+
+def rebuild_inbox_from_cache(config: HubConfig | None = None) -> InboxSummary | None:
+    """Build an InboxSummary entirely from disk — no Gmail or AI calls.
+
+    Returns None if the cache is empty.  Results may be slightly stale (emails
+    that have been deleted or moved since the last fetch will still appear) but
+    they load instantly and give the user something to read immediately.
+    """
+    cfg = config or load_config()
+    raw_results = load_all_cached_results(cfg)
+    if not raw_results:
+        return None
+
+    prefs = load_prefs(cfg)
+    results = [apply_safety_gates(r, prefs) for r in raw_results]
+    results_sorted = sorted(results, key=lambda x: x.importance, reverse=True)
+
+    by_category: dict[str, list[EmailResult]] = {cat: [] for cat in CATEGORIES}
+    suggested_deletes: list[EmailResult] = []
+    for r in results_sorted:
+        cat = r.category if r.category in by_category else "Other"
+        by_category[cat].append(r)
+        if r.should_delete:
+            suggested_deletes.append(r)
+
+    priority = results_sorted[:PRIORITY_TOP_N]
+
+    summary = InboxSummary(
+        results=results_sorted,
+        by_category=by_category,
+        suggested_deletes=suggested_deletes,
+        priority=priority,
+        cached_count=len(results_sorted),
+        analyzed_count=0,
     )
     save_inbox_snapshot(summary, cfg)
     return summary

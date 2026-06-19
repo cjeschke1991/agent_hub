@@ -42,10 +42,14 @@ def test_analysis_cache_roundtrip(tmp_path):
     save_cached_analysis(result, config)
     cached = load_cached_analysis("abc", config)
     assert cached is not None
-    rebuilt = result_from_cache(cached, email)
+    rebuilt = result_from_cache(cached)
+    assert rebuilt is not None
     assert rebuilt.summary == "Summary text"
     assert rebuilt.importance == 8
     assert rebuilt.requires_action is True
+    # Header fields are now stored in the cache and recoverable without a RawEmail.
+    assert rebuilt.subject == "Hello"
+    assert rebuilt.sender == "test@example.com"
 
 
 def test_clear_analysis_cache(tmp_path):

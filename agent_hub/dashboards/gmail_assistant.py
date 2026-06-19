@@ -21,6 +21,7 @@ from agent_hub.agents.gmail_assistant.logic import (
     keep_email_and_learn,
     load_and_analyze_inbox,
     load_inbox_snapshot,
+    rebuild_inbox_from_cache,
 )
 from agent_hub.agents.gmail_assistant.prefs import (
     GmailPrefs,
@@ -180,7 +181,11 @@ def _render_setup_guide() -> None:
 
 def _render_main(config) -> None:
     if "gmail_summary" not in st.session_state:
+        # Try snapshot first (exact last fetch), then rebuild from analysis cache
+        # so the user sees their emails instantly without hitting Gmail.
         snapshot = load_inbox_snapshot(config)
+        if snapshot is None:
+            snapshot = rebuild_inbox_from_cache(config)
         if snapshot is not None:
             st.session_state["gmail_summary"] = snapshot
 
@@ -239,7 +244,7 @@ def _render_inbox_tab(config) -> None:
             st.rerun()
 
     if fetch_clicked:
-        with st.spinner("Connecting to Gmail and analyzing emails with AI…"):
+        with st.spinner("Fetching inbox from Gmail…"):
             try:
                 service = get_gmail_service(config)
                 summary = load_and_analyze_inbox(service, config=config)
@@ -251,16 +256,7 @@ def _render_inbox_tab(config) -> None:
 
     summary = st.session_state.get("gmail_summary")
     if summary is None:
-        cache_count = analysis_cache_count(config)
-        if cache_count:
-            st.info(
-                f"You have **{cache_count}** saved AI analyses on disk, but nothing is loaded in the "
-                "dashboard yet. Click **Fetch & Analyze Inbox** on the Inbox tab — cached emails "
-                "load instantly; only new ones call the AI.",
-                icon="ℹ️",
-            )
-        else:
-            st.caption("Click **Fetch & Analyze Inbox** to load your emails.")
+        st.caption("Click **Fetch & Analyze Inbox** to load your emails.")
         return
 
     if summary.priority:
@@ -381,15 +377,7 @@ def _render_categories_tab(config) -> None:
     st.markdown('<div class="gmail-section-title">By Category</div>', unsafe_allow_html=True)
     summary = st.session_state.get("gmail_summary")
     if summary is None:
-        cache_count = analysis_cache_count(config)
-        if cache_count:
-            st.info(
-                f"**{cache_count}** AI analyses are saved on disk, but Categories only shows your "
-                "last inbox fetch. Go to the **Inbox** tab and click **Fetch & Analyze Inbox**.",
-                icon="ℹ️",
-            )
-        else:
-            st.caption("Fetch your inbox first (go to the **Inbox** tab).")
+        st.caption("Fetch your inbox first (go to the **Inbox** tab).")
         return
 
     for cat in CATEGORIES:
