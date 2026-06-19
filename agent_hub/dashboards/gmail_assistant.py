@@ -8,6 +8,7 @@ import streamlit as st
 from agent_hub.agents.gmail_assistant.analysis_cache import (
     analysis_cache_count,
     clear_analysis_cache,
+    load_all_cached_results,
 )
 from agent_hub.agents.gmail_assistant.auth import (
     get_gmail_service,
@@ -31,7 +32,11 @@ from agent_hub.agents.gmail_assistant.prefs import (
     record_vip,
     save_prefs,
 )
-from agent_hub.agents.gmail_assistant.user_scores import load_score, save_score
+from agent_hub.agents.gmail_assistant.user_scores import (
+    load_all_scores,
+    load_score,
+    save_score,
+)
 from agent_hub.core.config import load_config
 
 # ---------------------------------------------------------------------------
@@ -190,8 +195,8 @@ def _render_main(config) -> None:
         if snapshot is not None:
             st.session_state["gmail_summary"] = snapshot
 
-    tab_inbox, tab_suggested, tab_categories, tab_prefs = st.tabs(
-        ["📥 Inbox", "🗑️ Suggested Deletes", "📂 Categories", "⚙️ Preferences"]
+    tab_inbox, tab_suggested, tab_categories, tab_score, tab_prefs = st.tabs(
+        ["📥 Inbox", "🗑️ Suggested Deletes", "📂 Categories", "⭐ Score Emails", "⚙️ Preferences"]
     )
 
     with tab_inbox:
@@ -202,6 +207,9 @@ def _render_main(config) -> None:
 
     with tab_categories:
         _render_categories_tab(config)
+
+    with tab_score:
+        _render_score_tab(config)
 
     with tab_prefs:
         _render_prefs_tab(config)
@@ -388,6 +396,117 @@ def _render_categories_tab(config) -> None:
         with st.expander(f"{cat}  ({len(emails)})", expanded=False):
             for result in emails:
                 _render_email_card(result, config, key_prefix=f"cat_{cat}")
+
+
+# ---------------------------------------------------------------------------
+# Score Emails tab
+# ---------------------------------------------------------------------------
+
+def _render_score_tab(config) -> None:
+    st.markdown('<div class="gmail-section-title">Score Your Emails</div>', unsafe_allow_html=True)
+    st.caption(
+        "Rate each email 0–10. Scores are saved permanently and used to calibrate "
+        "the AI's importance predictions for future emails from the same sender."
+    )
+
+    all_results = load_all_cached_results(config)
+    if not all_results:
+        st.info("No cached emails yet. Fetch your inbox first.", icon="ℹ️")
+        return
+
+    all_scores = load_all_scores(config)
+    n_scored = sum(1 for r in all_results if r.msg_id in all_scores)
+    n_total = len(all_results)
+
+    # Progress bar
+    st.markdown(
+        f"**{n_scored} / {n_total}** emails scored",
+        help="Score all emails to maximise AI calibration.",
+    )
+    st.progress(n_scored / n_total if n_total else 0)
+
+    # Filter controls
+    col_filter, col_sort = st.columns(2)
+    with col_filter:
+        show = st.radio(
+            "Show",
+            ["Unscored first", "All", "Scored only", "Unscored only"],
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+    with col_sort:
+        sort_by = st.selectbox(
+            "Sort by",
+            ["AI importance (high → low)", "Date (newest first)", "Sender"],
+            label_visibility="collapsed",
+        )
+
+    # Sort
+    results = list(all_results)
+    if sort_by == "AI importance (high → low)":
+        results.sort(key=lambda r: r.importance, reverse=True)
+    elif sort_by == "Date (newest first)":
+        results.sort(key=lambda r: r.date, reverse=True)
+    else:
+        results.sort(key=lambda r: r.sender.lower())
+
+    # Filter
+    if show == "Unscored first":
+        results = sorted(results, key=lambda r: r.msg_id in all_scores)
+    elif show == "Scored only":
+        results = [r for r in results if r.msg_id in all_scores]
+    elif show == "Unscored only":
+        results = [r for r in results if r.msg_id not in all_scores]
+
+    if not results:
+        st.success("All emails in this view are already scored!")
+        return
+
+    for result in results:
+        existing = all_scores.get(result.msg_id)
+        _render_score_row(result, existing, config)
+
+    st.caption(f"Showing {len(results)} email(s) from the local analysis cache.")
+
+
+def _render_score_row(result, existing_score: int | None, config) -> None:
+    """Compact score row used in the Score Emails tab."""
+    score_state_key = f"score_val_{result.msg_id}"
+    score_key = f"scoretab_score_{result.msg_id}"
+
+    if score_state_key not in st.session_state:
+        st.session_state[score_state_key] = existing_score
+
+    scored_marker = f"**{existing_score}/10**" if existing_score is not None else "_unscored_"
+    imp_color = "🔴" if result.importance >= 7 else "🟡" if result.importance >= 4 else "🟢"
+
+    with st.expander(
+        f"{imp_color} {result.subject or '(no subject)'}  ·  {result.sender}  ·  {scored_marker}",
+        expanded=existing_score is None,
+    ):
+        st.caption(f"AI importance: {result.importance}/10  ·  {result.category}  ·  {result.date}")
+        if result.summary:
+            st.markdown(result.summary)
+
+        col_slider, col_btn = st.columns([5, 1])
+        with col_slider:
+            new_score = st.select_slider(
+                "Your score",
+                options=list(range(11)),
+                value=st.session_state[score_state_key] if st.session_state[score_state_key] is not None else 5,
+                format_func=lambda v: f"{v} — {'junk' if v == 0 else 'critical' if v == 10 else ('low' if v <= 3 else ('high' if v >= 7 else 'normal'))}",
+                key=score_key,
+            )
+        with col_btn:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("Save", key=f"{score_key}_btn"):
+                save_score(
+                    result.msg_id, result.sender, new_score,
+                    subject=result.subject, config=config,
+                )
+                st.session_state[score_state_key] = new_score
+                st.toast(f"Saved {new_score}/10 for '{result.subject}'")
+                st.rerun()
 
 
 # ---------------------------------------------------------------------------
