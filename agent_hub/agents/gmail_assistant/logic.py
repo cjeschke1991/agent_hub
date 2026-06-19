@@ -20,6 +20,7 @@ from agent_hub.agents.gmail_assistant.prefs import (
     record_delete,
     record_keep,
 )
+from agent_hub.agents.gmail_assistant.user_scores import sender_score_context
 from agent_hub.agents.gmail_assistant.scoring import apply_safety_gates
 from agent_hub.core.api_cache import cache_get_pickle, cache_set_pickle
 from agent_hub.core.config import HubConfig, load_config
@@ -75,7 +76,12 @@ def load_and_analyze_inbox(
     raw_emails = fetch_emails(service, max_results=cfg.gmail.max_emails, label=label, config=cfg)
     cached_results, to_analyze = _split_cached_emails(raw_emails, cfg)
 
-    newly_analyzed = analyze_emails_batch(to_analyze, pref_context, prefs=prefs)
+    newly_analyzed = analyze_emails_batch(
+        to_analyze,
+        pref_context,
+        prefs=prefs,
+        score_context_fn=lambda email: sender_score_context(email.sender, cfg),
+    )
     for result in newly_analyzed:
         if not result.summary.startswith("[Analysis failed:"):
             save_cached_analysis(result, cfg)

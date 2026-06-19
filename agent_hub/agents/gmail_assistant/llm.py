@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from agent_hub.agents.gmail_assistant.gmail import RawEmail
 from agent_hub.agents.gmail_assistant.prefs import (
@@ -68,8 +68,9 @@ def analyze_email(
     pref_context: str = "",
     *,
     prefs: GmailPrefs | None = None,
+    score_context: str = "",
 ) -> EmailResult:
-    user_content = _build_user_prompt(email, pref_context, prefs=prefs)
+    user_content = _build_user_prompt(email, pref_context, prefs=prefs, score_context=score_context)
     response_text = _call_llm(user_content)
     data = _parse_json(response_text)
     return EmailResult(
@@ -95,13 +96,15 @@ def analyze_emails_batch(
     pref_context: str = "",
     *,
     prefs: GmailPrefs | None = None,
+    score_context_fn: "Callable[[RawEmail], str] | None" = None,
 ) -> list[EmailResult]:
     if not emails:
         return []
 
     def _analyze_one(email: RawEmail) -> EmailResult:
+        sc = score_context_fn(email) if score_context_fn else ""
         try:
-            return analyze_email(email, pref_context, prefs=prefs)
+            return analyze_email(email, pref_context, prefs=prefs, score_context=sc)
         except Exception as exc:
             return EmailResult(
                 msg_id=email.msg_id,
@@ -129,6 +132,7 @@ def _build_user_prompt(
     pref_context: str,
     *,
     prefs: GmailPrefs | None = None,
+    score_context: str = "",
 ) -> str:
     parts: list[str] = []
     if pref_context:
@@ -142,6 +146,9 @@ def _build_user_prompt(
             )
         if is_vip_sender(email.sender, prefs):
             parts.append("This sender is VIP — treat as high importance, never delete.")
+
+    if score_context:
+        parts.append(score_context)
 
     parts.extend(
         [

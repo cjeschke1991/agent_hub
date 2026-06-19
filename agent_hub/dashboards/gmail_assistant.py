@@ -31,6 +31,7 @@ from agent_hub.agents.gmail_assistant.prefs import (
     record_vip,
     save_prefs,
 )
+from agent_hub.agents.gmail_assistant.user_scores import load_score, save_score
 from agent_hub.core.config import load_config
 
 # ---------------------------------------------------------------------------
@@ -547,6 +548,34 @@ def _render_email_card(
 
         if compact:
             return
+
+        # --- User importance score ---
+        existing_score = load_score(result.msg_id, config)
+        score_key = f"{key_prefix}_score_{result.msg_id}"
+        score_state_key = f"score_val_{result.msg_id}"
+
+        # Seed session state from disk on first render.
+        if score_state_key not in st.session_state:
+            st.session_state[score_state_key] = existing_score
+
+        col_score_label, col_score_slider, col_score_save = st.columns([1, 4, 1])
+        with col_score_label:
+            st.caption("Your score")
+        with col_score_slider:
+            new_score = st.select_slider(
+                label="",
+                options=list(range(11)),
+                value=st.session_state[score_state_key] if st.session_state[score_state_key] is not None else 5,
+                format_func=lambda v: f"{v} — {'junk' if v == 0 else 'critical' if v == 10 else ('low' if v <= 3 else ('high' if v >= 7 else 'normal'))}",
+                key=score_key,
+                label_visibility="collapsed",
+            )
+        with col_score_save:
+            if st.button("Save", key=f"{score_key}_btn", type="secondary"):
+                save_score(result.msg_id, result.sender, new_score,
+                           subject=result.subject, config=config)
+                st.session_state[score_state_key] = new_score
+                st.toast(f"Score {new_score}/10 saved for this email.")
 
         col_vip, col_prot, col_low, col_del, col_keep = st.columns(5)
 
