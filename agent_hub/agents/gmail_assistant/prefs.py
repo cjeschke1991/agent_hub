@@ -140,6 +140,36 @@ def _bump_reputation(sender: str, prefs: GmailPrefs, *, keep: bool) -> None:
         rep.delete += 1
 
 
+def record_vip(sender: str, config: HubConfig | None = None) -> None:
+    cfg = config or load_config()
+    prefs = load_prefs(cfg)
+    sender_key = extract_sender_email(sender)
+    if sender_key and sender_key not in prefs.vip_senders:
+        prefs.vip_senders.append(sender_key)
+    if sender_key in prefs.delete_senders:
+        prefs.delete_senders.remove(sender_key)
+    save_prefs(prefs, cfg)
+
+
+def record_protected(sender: str, config: HubConfig | None = None) -> None:
+    """Add sender to the protected (never delete) list."""
+    record_keep(sender, config=config)
+
+
+def record_low_value(sender: str, config: HubConfig | None = None) -> None:
+    cfg = config or load_config()
+    prefs = load_prefs(cfg)
+    sender_key = extract_sender_email(sender)
+    if sender_key and sender_key not in prefs.delete_senders:
+        prefs.delete_senders.append(sender_key)
+    if sender_key in prefs.keep_senders:
+        prefs.keep_senders.remove(sender_key)
+    if sender_key in prefs.vip_senders:
+        prefs.vip_senders.remove(sender_key)
+    _bump_reputation(sender, prefs, keep=False)
+    save_prefs(prefs, cfg)
+
+
 def record_delete(sender: str, config: HubConfig | None = None) -> None:
     cfg = config or load_config()
     prefs = load_prefs(cfg)

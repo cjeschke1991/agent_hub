@@ -19,6 +19,9 @@ from agent_hub.agents.gmail_assistant.logic import (
 from agent_hub.agents.gmail_assistant.prefs import (
     GmailPrefs,
     load_prefs,
+    record_low_value,
+    record_protected,
+    record_vip,
     save_prefs,
 )
 from agent_hub.core.config import load_config
@@ -99,14 +102,16 @@ _CSS = """
     color: #888;
     margin-top: 2px;
 }
-.gmail-delete-pending {
+.gmail-delete-pending,
+.gmail-action-pending {
     background: #7f1d1d !important;
     color: #fca5a5 !important;
     border: 1px solid #ef4444 !important;
     border-radius: 6px;
-    padding: 4px 12px;
-    font-size: 0.8rem;
+    padding: 4px 10px;
+    font-size: 0.75rem;
     cursor: default;
+    white-space: nowrap;
 }
 </style>
 """
@@ -224,7 +229,7 @@ def _render_inbox_tab(config) -> None:
     if summary.priority:
         st.markdown('<div class="gmail-section-title">Priority — Must Read Today</div>', unsafe_allow_html=True)
         for result in summary.priority:
-            _render_email_card(result, config, compact=True)
+            _render_email_card(result, config, compact=True, key_prefix="priority")
         st.divider()
 
     # Hero stats
@@ -277,7 +282,7 @@ def _render_inbox_tab(config) -> None:
         return
 
     for result in results:
-        _render_email_card(result, config)
+        _render_email_card(result, config, key_prefix="inbox")
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +333,7 @@ def _render_suggested_deletes_tab(config) -> None:
             st.rerun()
 
     for result in deletes:
-        _render_email_card(result, config, show_delete_reason=True)
+        _render_email_card(result, config, show_delete_reason=True, key_prefix="suggested")
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +353,7 @@ def _render_categories_tab(config) -> None:
             continue
         with st.expander(f"{cat}  ({len(emails)})", expanded=False):
             for result in emails:
-                _render_email_card(result, config)
+                _render_email_card(result, config, key_prefix=f"cat_{cat}")
 
 
 # ---------------------------------------------------------------------------
@@ -414,6 +419,38 @@ def _render_prefs_tab(config) -> None:
 # Email card
 # ---------------------------------------------------------------------------
 
+def _pending_action(
+    *,
+    pending_key: str,
+    pending_label: str,
+    button_label: str,
+    button_key: str,
+    action,
+    success_toast: str,
+    config,
+    result: EmailResult,
+) -> None:
+    """Render a button that turns red while a preference action runs."""
+    is_pending = st.session_state.get(pending_key, False)
+
+    if is_pending:
+        st.markdown(
+            f'<button class="gmail-action-pending" disabled>{pending_label}</button>',
+            unsafe_allow_html=True,
+        )
+        try:
+            action(result.sender, config=config)
+            st.toast(success_toast)
+        except Exception as exc:
+            st.error(str(exc))
+        finally:
+            st.session_state.pop(pending_key, None)
+            st.rerun()
+    elif st.button(button_label, key=button_key):
+        st.session_state[pending_key] = True
+        st.rerun()
+
+
 def _importance_badge(score: int) -> str:
     if score >= 7:
         cls = "badge-high"
@@ -432,9 +469,13 @@ def _render_email_card(
     config,
     show_delete_reason: bool = False,
     compact: bool = False,
+    *,
+    key_prefix: str = "card",
 ) -> None:
     pending_key = f"gmail_pending_delete_{result.msg_id}"
     is_pending = st.session_state.get(pending_key, False)
+    del_key = f"{key_prefix}_del_{result.msg_id}"
+    keep_key = f"{key_prefix}_keep_{result.msg_id}"
 
     badge_imp = _importance_badge(result.importance)
     badge_cat = f'<span class="gmail-badge badge-cat">{result.category}</span>'
@@ -474,26 +515,61 @@ def _render_email_card(
         if compact:
             return
 
-        col_del, col_keep, col_exp = st.columns([1, 1, 4])
+        col_vip, col_prot, col_low, col_del, col_keep = st.columns(5)
+
+        with col_vip:
+            _pending_action(
+                pending_key=f"gmail_pending_vip_{result.msg_id}",
+                pending_label="Adding VIP…",
+                button_label="VIP Sender",
+                button_key=f"{key_prefix}_vip_{result.msg_id}",
+                action=record_vip,
+                success_toast=f"Added {result.sender} to VIP senders.",
+                config=config,
+                result=result,
+            )
+
+        with col_prot:
+            _pending_action(
+                pending_key=f"gmail_pending_prot_{result.msg_id}",
+                pending_label="Protecting…",
+                button_label="Protected Sender",
+                button_key=f"{key_prefix}_prot_{result.msg_id}",
+                action=record_protected,
+                success_toast=f"Added {result.sender} to protected senders.",
+                config=config,
+                result=result,
+            )
+
+        with col_low:
+            _pending_action(
+                pending_key=f"gmail_pending_low_{result.msg_id}",
+                pending_label="Marking low-value…",
+                button_label="Low-Value Sender",
+                button_key=f"{key_prefix}_low_{result.msg_id}",
+                action=record_low_value,
+                success_toast=f"Added {result.sender} to low-value senders.",
+                config=config,
+                result=result,
+            )
 
         with col_del:
             if is_pending:
                 st.markdown(
-                    '<button class="gmail-delete-pending" disabled>Deleting…</button>',
+                    '<button class="gmail-action-pending" disabled>Deleting…</button>',
                     unsafe_allow_html=True,
                 )
-            elif st.button("🗑 Delete", key=f"del_{result.msg_id}"):
+            elif st.button("🗑 Delete", key=del_key):
                 service = st.session_state.get("gmail_service")
                 if service:
                     st.session_state[pending_key] = True
                     st.rerun()
 
         with col_keep:
-            if st.button("Keep ✓", key=f"keep_{result.msg_id}"):
+            if st.button("Keep ✓", key=keep_key):
                 keep_email_and_learn(result, config=config)
                 st.toast(f"Marked to keep emails from {result.sender}.")
 
-        # Execute pending delete after re-render (so user sees the red state briefly)
         if is_pending:
             service = st.session_state.get("gmail_service")
             if service:

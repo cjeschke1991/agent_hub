@@ -12,6 +12,8 @@ from agent_hub.agents.gmail_assistant.prefs import (
     prefs_to_context,
     record_delete,
     record_keep,
+    record_low_value,
+    record_vip,
     save_prefs,
 )
 from agent_hub.core.config import HubConfig
@@ -67,6 +69,28 @@ def test_record_keep_adds_to_protected_after_two(prefs_config):
     prefs = load_prefs(prefs_config)
     assert "boss@company.com" in prefs.keep_senders
     assert is_protected_sender("boss@company.com", prefs)
+
+
+def test_record_vip_adds_and_clears_low_value(prefs_config):
+    prefs = GmailPrefs(delete_senders=["vip@example.com"])
+    save_prefs(prefs, prefs_config)
+    record_vip("VIP Person <vip@example.com>", config=prefs_config)
+    updated = load_prefs(prefs_config)
+    assert "vip@example.com" in updated.vip_senders
+    assert "vip@example.com" not in updated.delete_senders
+
+
+def test_record_low_value_removes_vip_and_protected(prefs_config):
+    prefs = GmailPrefs(
+        vip_senders=["spam@example.com"],
+        keep_senders=["spam@example.com"],
+    )
+    save_prefs(prefs, prefs_config)
+    record_low_value("spam@example.com", config=prefs_config)
+    updated = load_prefs(prefs_config)
+    assert "spam@example.com" in updated.delete_senders
+    assert "spam@example.com" not in updated.vip_senders
+    assert "spam@example.com" not in updated.keep_senders
 
 
 def test_is_vip_sender():
