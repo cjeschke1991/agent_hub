@@ -14,6 +14,7 @@ TABS = [
     ("Music Recommender", "music_recommender"),
     ("File Search", "file_search"),
     ("Finance Summaries", "finance_summaries"),
+    ("Health & Fitness", "health_fitness"),
 ]
 
 ENABLED_TABS = {
@@ -30,6 +31,7 @@ PLACEHOLDER_COPY = {
     "pri_tracker": "Track Programmable Real Estate Investment metrics and milestones.",
     "file_search": "Fast local file search with agent-assisted ranking.",
     "finance_summaries": "Daily and monthly finance rollups from your data sources.",
+    "health_fitness": "Track workouts, nutrition, sleep, and health trends in one place.",
 }
 
 st.title("AI Agent Hub")
