@@ -471,14 +471,8 @@ def _render_score_tab(config) -> None:
 
 def _render_score_row(result, existing_score: int | None, config) -> None:
     """Compact score row used in the Score Emails tab."""
-    score_state_key = f"score_val_{result.msg_id}"
-    score_key = f"scoretab_score_{result.msg_id}"
-
-    if score_state_key not in st.session_state:
-        st.session_state[score_state_key] = existing_score
-
-    scored_marker = f"**{existing_score}/10**" if existing_score is not None else "_unscored_"
     imp_color = "🔴" if result.importance >= 7 else "🟡" if result.importance >= 4 else "🟢"
+    scored_marker = f"**{existing_score}/10**" if existing_score is not None else "_unscored_"
 
     with st.expander(
         f"{imp_color} {result.subject or '(no subject)'}  ·  {result.sender}  ·  {scored_marker}",
@@ -487,26 +481,7 @@ def _render_score_row(result, existing_score: int | None, config) -> None:
         st.caption(f"AI importance: {result.importance}/10  ·  {result.category}  ·  {result.date}")
         if result.summary:
             st.markdown(result.summary)
-
-        col_slider, col_btn = st.columns([5, 1])
-        with col_slider:
-            new_score = st.select_slider(
-                "Your score",
-                options=list(range(11)),
-                value=st.session_state[score_state_key] if st.session_state[score_state_key] is not None else 5,
-                format_func=lambda v: f"{v} — {'junk' if v == 0 else 'critical' if v == 10 else ('low' if v <= 3 else ('high' if v >= 7 else 'normal'))}",
-                key=score_key,
-            )
-        with col_btn:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("Save", key=f"{score_key}_btn"):
-                save_score(
-                    result.msg_id, result.sender, new_score,
-                    subject=result.subject, config=config,
-                )
-                st.session_state[score_state_key] = new_score
-                st.toast(f"Saved {new_score}/10 for '{result.subject}'")
-                st.rerun()
+        _render_score_widget(result, config, key_prefix="scoretab")
 
 
 # ---------------------------------------------------------------------------
@@ -604,6 +579,69 @@ def _pending_action(
         st.rerun()
 
 
+_SCORE_LABELS = {
+    0: "0 — junk",
+    1: "1 — very low",
+    2: "2 — low",
+    3: "3 — low",
+    4: "4 — normal",
+    5: "5 — normal",
+    6: "6 — normal",
+    7: "7 — high",
+    8: "8 — high",
+    9: "9 — very high",
+    10: "10 — critical",
+}
+
+
+def _render_score_widget(result: "EmailResult", config, *, key_prefix: str = "card") -> None:
+    """Dropdown 0-10 that auto-saves on change and flashes red to confirm."""
+    select_key = f"{key_prefix}_score_select_{result.msg_id}"
+    flash_key = f"score_flash_{result.msg_id}"
+
+    existing = load_score(result.msg_id, config)
+
+    # When the dropdown changes, on_change fires before the next render.
+    def _on_change() -> None:
+        chosen = st.session_state[select_key]
+        save_score(
+            result.msg_id,
+            result.sender,
+            chosen,
+            subject=result.subject,
+            category=result.category,
+            ai_importance=result.importance,
+            summary=result.summary,
+            date=result.date,
+            config=config,
+        )
+        st.session_state[flash_key] = chosen
+
+    flashing = flash_key in st.session_state
+
+    col_label, col_drop, col_confirm = st.columns([1, 3, 2])
+    with col_label:
+        st.caption("Your score")
+    with col_drop:
+        st.selectbox(
+            label="score",
+            options=list(range(11)),
+            index=existing if existing is not None else 5,
+            format_func=lambda v: _SCORE_LABELS[v],
+            key=select_key,
+            on_change=_on_change,
+            label_visibility="collapsed",
+        )
+    with col_confirm:
+        if flashing:
+            saved_val = st.session_state.pop(flash_key)
+            st.markdown(
+                f'<p style="color:#ef4444;font-weight:700;font-size:1.05rem;margin:6px 0 0 0;">'
+                f'✓ {saved_val}/10 saved</p>',
+                unsafe_allow_html=True,
+            )
+
+
 def _importance_badge(score: int) -> str:
     if score >= 7:
         cls = "badge-high"
@@ -669,32 +707,7 @@ def _render_email_card(
             return
 
         # --- User importance score ---
-        existing_score = load_score(result.msg_id, config)
-        score_key = f"{key_prefix}_score_{result.msg_id}"
-        score_state_key = f"score_val_{result.msg_id}"
-
-        # Seed session state from disk on first render.
-        if score_state_key not in st.session_state:
-            st.session_state[score_state_key] = existing_score
-
-        col_score_label, col_score_slider, col_score_save = st.columns([1, 4, 1])
-        with col_score_label:
-            st.caption("Your score")
-        with col_score_slider:
-            new_score = st.select_slider(
-                label="",
-                options=list(range(11)),
-                value=st.session_state[score_state_key] if st.session_state[score_state_key] is not None else 5,
-                format_func=lambda v: f"{v} — {'junk' if v == 0 else 'critical' if v == 10 else ('low' if v <= 3 else ('high' if v >= 7 else 'normal'))}",
-                key=score_key,
-                label_visibility="collapsed",
-            )
-        with col_score_save:
-            if st.button("Save", key=f"{score_key}_btn", type="secondary"):
-                save_score(result.msg_id, result.sender, new_score,
-                           subject=result.subject, config=config)
-                st.session_state[score_state_key] = new_score
-                st.toast(f"Score {new_score}/10 saved for this email.")
+        _render_score_widget(result, config, key_prefix=key_prefix)
 
         col_vip, col_prot, col_low, col_del, col_keep = st.columns(5)
 

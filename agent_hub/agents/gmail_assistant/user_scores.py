@@ -1,8 +1,8 @@
 """User-assigned importance scores for Gmail emails.
 
-Scores are stored per message and aggregated per sender so that future emails
-from the same sender carry the user's calibrated importance signal into the LLM
-prompt.
+Scores are stored per message (with full email context) and aggregated per
+sender so that future emails from the same sender carry the user's calibrated
+importance signal into the LLM prompt.
 """
 from __future__ import annotations
 
@@ -54,9 +54,13 @@ def save_score(
     score: int,
     *,
     subject: str = "",
+    category: str = "",
+    ai_importance: int | None = None,
+    summary: str = "",
+    date: str = "",
     config: HubConfig | None = None,
 ) -> None:
-    """Persist a user-assigned 0-10 score for a specific email."""
+    """Persist a user-assigned 0-10 score with full email context."""
     cfg = config or load_config()
     data = _load_raw(cfg)
     sender_key = extract_sender_email(sender)
@@ -68,6 +72,10 @@ def save_score(
         "score": int(score),
         "sender": sender_key,
         "subject": subject,
+        "category": category,
+        "ai_importance": ai_importance,
+        "summary": summary[:200] if summary else "",
+        "date": date,
     }
 
     sender_entry = data["by_sender"].setdefault(sender_key, {"scores": []})
@@ -100,7 +108,7 @@ def get_sender_stats(sender: str, config: HubConfig | None = None) -> SenderScor
 
 
 def sender_score_context(sender: str, config: HubConfig | None = None) -> str:
-    """One-line string suitable for injecting into the LLM prompt."""
+    """One-line string for injecting into the LLM prompt."""
     stats = get_sender_stats(sender, config)
     if stats is None:
         return ""
