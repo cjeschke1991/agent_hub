@@ -33,6 +33,16 @@ class SpotifyConfigError(SpotifyError):
     pass
 
 
+class SpotifyWebApiUnavailableError(SpotifyError):
+    """Raised when Spotify Web API data endpoints are blocked (e.g. Premium required)."""
+
+
+WEB_API_UNAVAILABLE_MESSAGE = (
+    "Spotify text search is unavailable for this developer account "
+    "(Premium subscription required). Paste a Spotify track or artist link/ID instead."
+)
+
+
 @dataclass
 class TrackSearchResult:
     spotify_id: str
@@ -105,6 +115,33 @@ _embed_lock = threading.Lock()
 _embed_last_request_at = 0.0
 
 
+def _is_transient_network_error(exc: BaseException) -> bool:
+    if isinstance(exc, (TimeoutError, ConnectionResetError, ConnectionAbortedError)):
+        return True
+    if isinstance(exc, urllib.error.URLError):
+        reason = exc.reason
+        if isinstance(reason, BaseException):
+            return _is_transient_network_error(reason)
+        text = str(reason).lower()
+        return any(
+            token in text
+            for token in (
+                "connection reset",
+                "timed out",
+                "connection refused",
+                "broken pipe",
+                "network is unreachable",
+            )
+        )
+    if isinstance(exc, OSError):
+        return exc.errno in {54, 61, 104, 110, 10054}
+    return False
+
+
+def _network_retry_delay(attempt: int) -> float:
+    return float((2**attempt) + 1)
+
+
 def map_parallel(
     items: list[T],
     fn: Callable[[T], R],
@@ -168,8 +205,8 @@ def _get_token(config: HubConfig | None = None) -> str:
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         raise SpotifyConfigError(f"Spotify auth failed ({exc.code}): {body}") from exc
-    except urllib.error.URLError as exc:
-        raise SpotifyError(f"Could not reach Spotify: {exc.reason}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise SpotifyError(f"Could not reach Spotify: {exc}") from exc
     token = str(payload["access_token"])
     _token_cache["token"] = token
     _token_cache["expires_at"] = now + int(payload.get("expires_in", 3600))
@@ -184,21 +221,34 @@ def _request(path: str, params: dict | None = None, config: HubConfig | None = N
     token = _get_token(config)
     query = ("?" + urllib.parse.urlencode(params)) if params else ""
     url = f"{SPOTIFY_API_BASE}{path}{query}"
-    req = urllib.request.Request(
-        url,
-        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        if exc.code == 401:
-            _invalidate_token()
-            raise SpotifyConfigError("Spotify rejected the access token. Check credentials.") from exc
-        body = exc.read().decode("utf-8", errors="replace")
-        raise SpotifyError(f"Spotify request failed ({exc.code}): {body}") from exc
-    except urllib.error.URLError as exc:
-        raise SpotifyError(f"Could not reach Spotify: {exc.reason}") from exc
+    max_attempts = 3
+    last_error: BaseException | None = None
+    for attempt in range(max_attempts):
+        req = urllib.request.Request(
+            url,
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                _invalidate_token()
+                raise SpotifyConfigError("Spotify rejected the access token. Check credentials.") from exc
+            body = exc.read().decode("utf-8", errors="replace")
+            if exc.code == 403:
+                lower = body.lower()
+                if "premium" in lower or "subscription" in lower:
+                    global _web_api_available
+                    _web_api_available = False
+            raise SpotifyError(f"Spotify request failed ({exc.code}): {body}") from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_error = exc
+            if _is_transient_network_error(exc) and attempt < max_attempts - 1:
+                time.sleep(_network_retry_delay(attempt))
+                continue
+            raise SpotifyError(f"Could not reach Spotify: {exc}") from exc
+    raise SpotifyError(f"Could not reach Spotify: {last_error}")
 
 
 def spotify_configured(config: HubConfig | None = None) -> bool:
@@ -255,10 +305,86 @@ def _year_from_date(value: str | None) -> int | None:
         return None
 
 
+def parse_track_id(value: str) -> str | None:
+    value = value.strip()
+    if "open.spotify.com/track/" in value:
+        tail = value.split("open.spotify.com/track/", 1)[1]
+        return tail.split("?", 1)[0].split("/", 1)[0]
+    if value.startswith("spotify:track:"):
+        return value.split(":", 2)[2]
+    if re.fullmatch(r"[A-Za-z0-9]{22}", value):
+        return value
+    return None
+
+
+def parse_artist_id(value: str) -> str | None:
+    value = value.strip()
+    if "open.spotify.com/artist/" in value:
+        tail = value.split("open.spotify.com/artist/", 1)[1]
+        return tail.split("?", 1)[0].split("/", 1)[0]
+    if value.startswith("spotify:artist:"):
+        return value.split(":", 2)[2]
+    if re.fullmatch(r"[A-Za-z0-9]{22}", value):
+        return value
+    return None
+
+
+def _track_details_to_search_result(details: TrackDetails) -> TrackSearchResult:
+    return TrackSearchResult(
+        spotify_id=details.spotify_id,
+        title=details.title,
+        artist=details.artist,
+        artist_id=details.artist_id,
+        album=details.album,
+        year=details.year,
+        popularity=details.popularity,
+        image_url=details.image_url,
+        preview_url=details.preview_url,
+    )
+
+
+def _artist_details_to_search_result(details: ArtistDetails) -> ArtistSearchResult:
+    return ArtistSearchResult(
+        spotify_id=details.spotify_id,
+        name=details.name,
+        genres=list(details.genres),
+        popularity=details.popularity,
+        followers=details.followers,
+        image_url=details.image_url,
+    )
+
+
+def _search_tracks_by_spotify_reference(
+    query: str,
+    config: HubConfig | None = None,
+) -> list[TrackSearchResult] | None:
+    track_id = parse_track_id(query)
+    if not track_id:
+        return None
+    details = get_track_details_with_fallback(track_id, config=config)
+    return [_track_details_to_search_result(details)]
+
+
+def _search_artists_by_spotify_reference(
+    query: str,
+    config: HubConfig | None = None,
+) -> list[ArtistSearchResult] | None:
+    artist_id = parse_artist_id(query)
+    if not artist_id:
+        return None
+    details = get_artist_details_with_fallback(artist_id, config=config)
+    return [_artist_details_to_search_result(details)]
+
+
 def search_tracks(query: str, limit: int = 20, config: HubConfig | None = None) -> list[TrackSearchResult]:
     query = query.strip()
     if not query:
         return []
+    reference_results = _search_tracks_by_spotify_reference(query, config=config)
+    if reference_results is not None:
+        return reference_results
+    if not spotify_web_api_available(config):
+        raise SpotifyWebApiUnavailableError(WEB_API_UNAVAILABLE_MESSAGE)
     payload = _request("/search", {"q": query, "type": "track", "limit": min(limit, 50)}, config=config)
     results: list[TrackSearchResult] = []
     for item in payload.get("tracks", {}).get("items", []):
@@ -286,6 +412,11 @@ def search_artists(query: str, limit: int = 20, config: HubConfig | None = None)
     query = query.strip()
     if not query:
         return []
+    reference_results = _search_artists_by_spotify_reference(query, config=config)
+    if reference_results is not None:
+        return reference_results
+    if not spotify_web_api_available(config):
+        raise SpotifyWebApiUnavailableError(WEB_API_UNAVAILABLE_MESSAGE)
     payload = _request("/search", {"q": query, "type": "artist", "limit": min(limit, 50)}, config=config)
     results: list[ArtistSearchResult] = []
     for item in payload.get("artists", {}).get("items", []):
@@ -593,14 +724,17 @@ def _fetch_embed_next_data(embed_path: str) -> dict:
         except urllib.error.HTTPError as exc:
             if exc.code == 429 and attempt < max_attempts - 1:
                 retry_after = exc.headers.get("Retry-After")
-                delay = float(retry_after) if retry_after else (2**attempt) + 1
+                delay = float(retry_after) if retry_after else _network_retry_delay(attempt)
                 time.sleep(delay)
                 continue
             raise SpotifyError(
                 f"Could not fetch Spotify embed page ({exc.code}): {exc.reason}"
             ) from exc
-        except urllib.error.URLError as exc:
-            raise SpotifyError(f"Could not fetch Spotify embed page: {exc.reason}") from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            if _is_transient_network_error(exc) and attempt < max_attempts - 1:
+                time.sleep(_network_retry_delay(attempt))
+                continue
+            raise SpotifyError(f"Could not fetch Spotify embed page: {exc}") from exc
     else:
         raise SpotifyError("Could not fetch Spotify embed page after retries.")
 

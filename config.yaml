@@ -1,5 +1,10 @@
 data_dir: data
 
+# Gmail Assistant — set GMAIL_CREDENTIALS_PATH in your .env or fill in below.
+gmail:
+  credentials_path: ""   # path to client_secret.json from Google Cloud Console
+  max_emails: 50
+
 slice_order:
   - priorities
   - gmail_stub

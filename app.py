@@ -1,6 +1,6 @@
 import streamlit as st
 
-from agent_hub.dashboards import daily_briefing, movie_recommender, music_recommender, pinball_tracker, placeholder
+from agent_hub.dashboards import daily_briefing, gmail_assistant, movie_recommender, music_recommender, pinball_tracker, placeholder
 
 st.set_page_config(page_title="AI Agent Hub", page_icon="🤖", layout="wide")
 
@@ -18,6 +18,7 @@ TABS = [
 
 ENABLED_TABS = {
     "daily_briefing": daily_briefing.render,
+    "gmail_calendar": gmail_assistant.render,
     "pinball_tracker": pinball_tracker.render,
     "movie_recommender": movie_recommender.render,
     "music_recommender": music_recommender.render,

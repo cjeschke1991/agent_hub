@@ -100,6 +100,13 @@ class MusicRecommenderConfig:
 
 
 @dataclass
+class GmailConfig:
+    credentials_path: str = ""
+    max_emails: int = 50
+    token_path: str = ""  # defaults to ~/.agent_hub/gmail_token.json if empty
+
+
+@dataclass
 class HubConfig:
     data_dir: Path
     slice_order: list[str] = field(default_factory=list)
@@ -110,6 +117,7 @@ class HubConfig:
     movie_recommender: MovieRecommenderConfig = field(default_factory=MovieRecommenderConfig)
     spotify: SpotifyConfig = field(default_factory=SpotifyConfig)
     music_recommender: MusicRecommenderConfig = field(default_factory=MusicRecommenderConfig)
+    gmail: GmailConfig = field(default_factory=GmailConfig)
 
     def stale_threshold_hours(self, agent_id: str) -> float:
         default = self.stale_hours.get("default", 36)
@@ -154,6 +162,7 @@ def load_config(config_path: Path | None = None) -> HubConfig:
     briefing_raw = raw.get("briefing", {}) or {}
     tmdb_raw = raw.get("tmdb", {}) or {}
     omdb_raw = raw.get("omdb", {}) or {}
+    gmail_raw = raw.get("gmail", {}) or {}
     movie_raw = raw.get("movie_recommender", {}) or {}
     weights_raw = movie_raw.get("weights", {}) or {}
     spotify_raw = raw.get("spotify", {}) or {}
@@ -183,6 +192,14 @@ def load_config(config_path: Path | None = None) -> HubConfig:
                 rating=float(weights_raw.get("rating", 0.15)),
                 keywords=float(weights_raw.get("keywords", 0.10)),
             )
+        ),
+        gmail=GmailConfig(
+            credentials_path=(
+                os.environ.get("GMAIL_CREDENTIALS_PATH")
+                or str(gmail_raw.get("credentials_path", "") or "")
+            ).strip(),
+            max_emails=int(gmail_raw.get("max_emails", 50)),
+            token_path=str(gmail_raw.get("token_path", "") or "").strip(),
         ),
         spotify=SpotifyConfig(
             client_id=spotify_client_id.strip(),

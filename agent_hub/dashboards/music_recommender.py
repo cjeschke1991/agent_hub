@@ -38,6 +38,7 @@ from agent_hub.agents.music_recommender.logic import (
 from agent_hub.agents.music_recommender.spotify import (
     SpotifyConfigError,
     SpotifyError,
+    SpotifyWebApiUnavailableError,
     is_spotify_catalog_id,
     spotify_configured,
     spotify_web_api_available,
@@ -231,8 +232,17 @@ def _render_add_music() -> None:
     disliked_artist_ids = {a.spotify_id for a in list_disliked_artists() if a.spotify_id}
     wishlist_artist_ids = {a.spotify_id for a in list_wishlist_artists()}
 
+    if spotify_configured() and not spotify_web_api_available():
+        st.info(
+            "Spotify text search is unavailable for this developer account. "
+            "Paste a Spotify track or artist link/ID in the search box below."
+        )
+
     st.subheader("Search Songs")
-    st.caption("Search Spotify for tracks, then like, dislike, or add to your wishlist.")
+    st.caption(
+        "Search Spotify for tracks, or paste a track link/ID "
+        "(e.g. open.spotify.com/track/…)."
+    )
     track_query = st.text_input("Song search", key="music_track_query")
     if st.button("Search Songs", use_container_width=True, key="music_search_songs_btn"):
         if not track_query.strip():
@@ -242,6 +252,12 @@ def _render_add_music() -> None:
                 st.session_state.music_track_results = search_songs(track_query)
             except SpotifyConfigError as exc:
                 st.error(str(exc))
+            except SpotifyWebApiUnavailableError as exc:
+                st.error(str(exc))
+                st.session_state.music_track_results = []
+            except SpotifyError as exc:
+                st.error(str(exc))
+                st.session_state.music_track_results = []
 
     for result in st.session_state.music_track_results:
         _render_song_row(result, liked_song_ids, disliked_song_ids, wishlist_song_ids, "search_song")
@@ -249,7 +265,10 @@ def _render_add_music() -> None:
     st.divider()
 
     st.subheader("Search Artists")
-    st.caption("Search Spotify for artists, then like, dislike, or add to your wishlist.")
+    st.caption(
+        "Search Spotify for artists, or paste an artist link/ID "
+        "(e.g. open.spotify.com/artist/…)."
+    )
     artist_query = st.text_input("Artist search", key="music_artist_query")
     if st.button("Search Artists", use_container_width=True, key="music_search_artists_btn"):
         if not artist_query.strip():
@@ -259,12 +278,18 @@ def _render_add_music() -> None:
                 st.session_state.music_artist_results = search_artists_query(artist_query)
             except SpotifyConfigError as exc:
                 st.error(str(exc))
+            except SpotifyWebApiUnavailableError as exc:
+                st.error(str(exc))
+                st.session_state.music_artist_results = []
+            except SpotifyError as exc:
+                st.error(str(exc))
+                st.session_state.music_artist_results = []
 
     for result in st.session_state.music_artist_results:
         _render_artist_row(result, liked_artist_ids, disliked_artist_ids, wishlist_artist_ids, "search_artist")
 
 
-_TASTE_VISIBLE_ITEMS = 8
+_TASTE_VISIBLE_ITEMS = 10
 _TASTE_SONG_ROW_PX = 78
 _TASTE_ARTIST_ROW_PX = 72
 
@@ -868,17 +893,7 @@ def _render_taste_artist_list(
     _finalize_pending_taste_removal("artist", {artist.pandora_id for artist in artists}, config=config)
 
 
-def _render_my_taste(config) -> None:
-    liked_songs = list_liked_songs(config)
-    disliked_songs = list_disliked_songs(config)
-    liked_artists = list_liked_artists(config)
-    disliked_artists = list_disliked_artists(config)
-
-    _render_taste_panel_css()
-    _render_taste_column_title_css()
-    _render_taste_hero(liked_songs, disliked_songs, liked_artists, disliked_artists)
-    st.caption("Songs and artists you've liked or disliked to personalize recommendations.")
-
+def _render_taste_songs_tab(liked_songs, disliked_songs) -> None:
     _render_taste_section_title("Songs", font_size="calc(1.5em + 4pt)")
     col1, col2 = st.columns(2)
     with col1:
@@ -904,11 +919,11 @@ def _render_my_taste(config) -> None:
                 show_title=False,
             )
 
-    st.divider()
 
+def _render_taste_artists_tab(liked_artists, disliked_artists, config) -> None:
     _render_taste_section_title("Artists")
-    col3, col4 = st.columns(2)
-    with col3:
+    col1, col2 = st.columns(2)
+    with col1:
         _render_taste_column_title("Liked Artists")
         with st.container(height=_taste_list_height(songs=False)):
             _render_taste_panel_marker("like")
@@ -920,7 +935,7 @@ def _render_my_taste(config) -> None:
                 show_letter_index=True,
                 show_title=False,
             )
-    with col4:
+    with col2:
         _render_taste_column_title("Disliked Artists")
         with st.container(height=_taste_list_height(songs=False)):
             _render_taste_panel_marker("dislike")
@@ -931,6 +946,29 @@ def _render_my_taste(config) -> None:
                 config,
                 show_title=False,
             )
+
+
+def _render_my_taste(config) -> None:
+    liked_songs = list_liked_songs(config)
+    disliked_songs = list_disliked_songs(config)
+    liked_artists = list_liked_artists(config)
+    disliked_artists = list_disliked_artists(config)
+
+    _render_taste_panel_css()
+    _render_taste_column_title_css()
+    _render_taste_hero(liked_songs, disliked_songs, liked_artists, disliked_artists)
+    st.caption("Songs and artists you've liked or disliked to personalize recommendations.")
+
+    tab_songs, tab_artists = st.tabs(
+        [
+            f"Songs ({len(liked_songs) + len(disliked_songs)})",
+            f"Artists ({len(liked_artists) + len(disliked_artists)})",
+        ]
+    )
+    with tab_songs:
+        _render_taste_songs_tab(liked_songs, disliked_songs)
+    with tab_artists:
+        _render_taste_artists_tab(liked_artists, disliked_artists, config)
 
 
 def _render_wishlist(config) -> None:
@@ -1153,6 +1191,14 @@ def _render_recommendations() -> None:
                 st.session_state.music_recs_status = None
         except (SpotifyConfigError, MusicRecommendationError, MusicValidationError, SpotifyError) as exc:
             st.session_state.music_recs_status = ("error", str(exc))
+            st.session_state.music_song_recs = []
+            st.session_state.music_artist_recs = []
+        except OSError as exc:
+            st.session_state.music_recs_status = (
+                "error",
+                "Spotify connection was interrupted while fetching recommendations. "
+                "Wait a minute and try again.",
+            )
             st.session_state.music_song_recs = []
             st.session_state.music_artist_recs = []
         except Exception as exc:

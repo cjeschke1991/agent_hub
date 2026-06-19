@@ -871,15 +871,18 @@ def _prefetch_genres_for_details(
         tasks.append((track.artist_id, primary))
 
     def _fetch_genres(task: tuple[str, str]) -> None:
-        artist_id, name = task
-        _resolve_item_genres(
-            artist_id=artist_id,
-            artist_name=name,
-            existing_genres=[],
-            config=config,
-            liked_artists=liked_artists,
-            cache=genre_cache,
-        )
+        try:
+            artist_id, name = task
+            _resolve_item_genres(
+                artist_id=artist_id,
+                artist_name=name,
+                existing_genres=[],
+                config=config,
+                liked_artists=liked_artists,
+                cache=genre_cache,
+            )
+        except (SpotifyError, OSError):
+            return
 
     if tasks:
         map_parallel(tasks, _fetch_genres, max_workers=4)
@@ -1744,11 +1747,14 @@ def recommend(
 
     # --- Zone 1 (Safe): embed top tracks from liked artists ---
     safe_ids: set[str] = set()
-    embed_track_cache = collect_embed_recommendation_tracks(
-        liked_songs,
-        liked_artists,
-        max_artists=embed_max_artists,
-    )
+    try:
+        embed_track_cache = collect_embed_recommendation_tracks(
+            liked_songs,
+            liked_artists,
+            max_artists=embed_max_artists,
+        )
+    except (SpotifyError, OSError):
+        embed_track_cache = {}
     safe_ids.update(embed_track_cache.keys())
 
     # Enrich liked artist IDs from embed-resolved tracks for affinity scoring
@@ -2047,10 +2053,13 @@ def recommend(
     # credited on the user's liked songs and collab top-tracks from embed pages.
     if not candidate_artist_ids:
         if not embed_track_cache:
-            embed_track_cache = collect_embed_recommendation_tracks(
-                liked_songs,
-                liked_artists,
-            )
+            try:
+                embed_track_cache = collect_embed_recommendation_tracks(
+                    liked_songs,
+                    liked_artists,
+                )
+            except (SpotifyError, OSError):
+                embed_track_cache = {}
 
         artists_in_cache = {t.artist_id for t in embed_track_cache.values() if t.artist_id}
         missing_top_track_artists = [
