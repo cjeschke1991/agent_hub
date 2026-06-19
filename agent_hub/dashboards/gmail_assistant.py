@@ -319,6 +319,10 @@ def _render_inbox_tab(config) -> None:
     if min_imp > 0:
         results = [r for r in results if r.importance >= min_imp]
 
+    # Deduplicate by msg_id to prevent duplicate widget key errors.
+    seen_ids: set[str] = set()
+    results = [r for r in results if not (r.msg_id in seen_ids or seen_ids.add(r.msg_id))]  # type: ignore[func-returns-value]
+
     if not results:
         st.info("No emails match the current filters.")
         return

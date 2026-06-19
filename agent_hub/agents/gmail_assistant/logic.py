@@ -131,6 +131,12 @@ def rebuild_inbox_from_cache(config: HubConfig | None = None) -> InboxSummary | 
     if not raw_results:
         return None
 
+    # Deduplicate by msg_id (last-write wins from the cache directory scan).
+    seen: dict[str, EmailResult] = {}
+    for r in raw_results:
+        seen[r.msg_id] = r
+    raw_results = list(seen.values())
+
     prefs = load_prefs(cfg)
     results = [apply_safety_gates(r, prefs) for r in raw_results]
     results_sorted = sorted(results, key=lambda x: x.importance, reverse=True)
