@@ -9,16 +9,7 @@ from agent_hub.agents.gmail_assistant.analysis_cache import (
     result_from_cache,
     save_cached_analysis,
 )
-from agent_hub.agents.gmail_assistant.auth import (
-    calendar_scope_granted,
-    get_calendar_service,
-    get_gmail_service,
-)
-from agent_hub.agents.gmail_assistant.calendar import (
-    calendar_emails_from_events,
-    fetch_upcoming_events,
-    format_calendar_context,
-)
+from agent_hub.agents.gmail_assistant.auth import get_gmail_service
 from agent_hub.agents.gmail_assistant.gmail import RawEmail, fetch_emails, send_email, trash_email
 from agent_hub.agents.gmail_assistant.llm import CATEGORIES, EmailResult, analyze_emails_batch
 from agent_hub.agents.gmail_assistant.prefs import (
@@ -28,9 +19,12 @@ from agent_hub.agents.gmail_assistant.prefs import (
     record_keep,
 )
 from agent_hub.agents.gmail_assistant.scoring import apply_safety_gates
+from agent_hub.core.api_cache import cache_get_pickle, cache_set_pickle
 from agent_hub.core.config import HubConfig, load_config
 
 PRIORITY_TOP_N = 5
+_SNAPSHOT_NAMESPACE = "gmail_inbox"
+_SNAPSHOT_KEY = "last_summary"
 
 
 @dataclass
@@ -39,8 +33,6 @@ class InboxSummary:
     by_category: dict[str, list[EmailResult]] = field(default_factory=dict)
     suggested_deletes: list[EmailResult] = field(default_factory=list)
     priority: list[EmailResult] = field(default_factory=list)
-    calendar_available: bool = True
-    calendar_warning: str = ""
     cached_count: int = 0
     analyzed_count: int = 0
 
@@ -67,28 +59,7 @@ def load_and_analyze_inbox(
 ) -> InboxSummary:
     cfg = config or load_config()
     prefs = load_prefs(cfg)
-
-    calendar_context = ""
-    calendar_emails: set[str] = set()
-    calendar_available = True
-    calendar_warning = ""
-
-    if calendar_scope_granted(cfg):
-        try:
-            cal_service = get_calendar_service(cfg)
-            events = fetch_upcoming_events(cal_service)
-            calendar_context = format_calendar_context(events)
-            calendar_emails = calendar_emails_from_events(events)
-        except Exception as exc:
-            calendar_available = False
-            calendar_warning = f"Calendar unavailable: {exc}"
-    else:
-        calendar_available = False
-        calendar_warning = (
-            "Calendar access not granted. Sign out and sign in again to enable calendar-aware ranking."
-        )
-
-    pref_context = prefs_to_context(prefs, calendar_context=calendar_context)
+    pref_context = prefs_to_context(prefs)
 
     raw_emails = fetch_emails(service, max_results=cfg.gmail.max_emails, label=label)
     cached_results, to_analyze = _split_cached_emails(raw_emails, cfg)
@@ -101,9 +72,7 @@ def load_and_analyze_inbox(
     analyzed_by_id = {r.msg_id: r for r in cached_results + newly_analyzed}
     analyzed = [analyzed_by_id[email.msg_id] for email in raw_emails if email.msg_id in analyzed_by_id]
 
-    results = [
-        apply_safety_gates(r, prefs, calendar_emails=calendar_emails) for r in analyzed
-    ]
+    results = [apply_safety_gates(r, prefs) for r in analyzed]
 
     by_category: dict[str, list[EmailResult]] = {cat: [] for cat in CATEGORIES}
     suggested_deletes: list[EmailResult] = []
@@ -117,16 +86,35 @@ def load_and_analyze_inbox(
     results_sorted = sorted(results, key=lambda x: x.importance, reverse=True)
     priority = results_sorted[:PRIORITY_TOP_N]
 
-    return InboxSummary(
+    summary = InboxSummary(
         results=results_sorted,
         by_category=by_category,
         suggested_deletes=suggested_deletes,
         priority=priority,
-        calendar_available=calendar_available,
-        calendar_warning=calendar_warning,
         cached_count=len(cached_results),
         analyzed_count=len(newly_analyzed),
     )
+    save_inbox_snapshot(summary, cfg)
+    return summary
+
+
+def save_inbox_snapshot(summary: InboxSummary, config: HubConfig | None = None) -> None:
+    """Persist the last inbox view so Categories/Inbox tabs work after refresh."""
+    cfg = config or load_config()
+    cache_set_pickle(cfg.data_dir, _SNAPSHOT_NAMESPACE, _SNAPSHOT_KEY, summary)
+
+
+def load_inbox_snapshot(config: HubConfig | None = None) -> InboxSummary | None:
+    cfg = config or load_config()
+    snapshot = cache_get_pickle(cfg.data_dir, _SNAPSHOT_NAMESPACE, _SNAPSHOT_KEY)
+    return snapshot if isinstance(snapshot, InboxSummary) else None
+
+
+def clear_inbox_snapshot(config: HubConfig | None = None) -> None:
+    cfg = config or load_config()
+    path = cfg.data_dir / "cache" / _SNAPSHOT_NAMESPACE / f"{_SNAPSHOT_KEY}.pkl"
+    if path.exists():
+        path.unlink()
 
 
 def delete_email_and_learn(

@@ -110,7 +110,7 @@ def get_sender_reputation(sender: str, prefs: GmailPrefs) -> SenderReputation:
     return prefs.sender_reputation.get(email, SenderReputation())
 
 
-def prefs_to_context(prefs: GmailPrefs, calendar_context: str = "") -> str:
+def prefs_to_context(prefs: GmailPrefs) -> str:
     lines: list[str] = []
     if prefs.vip_senders:
         lines.append("VIP senders (always high importance, never delete): " + ", ".join(prefs.vip_senders))
@@ -124,8 +124,6 @@ def prefs_to_context(prefs: GmailPrefs, calendar_context: str = "") -> str:
         lines.append("Delete if subject contains: " + ", ".join(prefs.delete_subjects))
     if prefs.notes:
         lines.append("Additional notes: " + prefs.notes)
-    if calendar_context:
-        lines.append(calendar_context)
     return "\n".join(lines)
 
 

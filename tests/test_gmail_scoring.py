@@ -73,14 +73,6 @@ def test_keyword_boosts_importance():
     assert gated.importance == 5
 
 
-def test_calendar_match_boosts_importance():
-    prefs = GmailPrefs()
-    result = _email(sender="client@example.com", importance=4)
-    gated = apply_safety_gates(result, prefs, calendar_emails={"client@example.com"})
-    assert gated.importance == 6
-    assert "calendar" in gated.urgency_reason.lower()
-
-
 def test_reputation_keep_boosts_importance():
     prefs = GmailPrefs(
         sender_reputation={"boss@company.com": SenderReputation(keep=3, delete=0)}

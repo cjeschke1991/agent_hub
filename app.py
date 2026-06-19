@@ -7,7 +7,7 @@ st.set_page_config(page_title="AI Agent Hub", page_icon="🤖", layout="wide")
 TABS = [
     ("Daily Briefing", "daily_briefing"),
     ("Screenshot Organizer", "screenshot_organizer"),
-    ("Gmail / Calendar Assistant", "gmail_calendar"),
+    ("Gmail Assistant", "gmail_assistant"),
     ("PRI Tracker", "pri_tracker"),
     ("Pinball Tracker", "pinball_tracker"),
     ("Movie Recommender", "movie_recommender"),
@@ -18,7 +18,7 @@ TABS = [
 
 ENABLED_TABS = {
     "daily_briefing": daily_briefing.render,
-    "gmail_calendar": gmail_assistant.render,
+    "gmail_assistant": gmail_assistant.render,
     "pinball_tracker": pinball_tracker.render,
     "movie_recommender": movie_recommender.render,
     "music_recommender": music_recommender.render,
@@ -26,7 +26,7 @@ ENABLED_TABS = {
 
 PLACEHOLDER_COPY = {
     "screenshot_organizer": "Organize screenshots into folders with tags and quick previews.",
-    "gmail_calendar": "Assistant for inbox triage and calendar-aware daily planning.",
+    "gmail_assistant": "Assistant for AI-powered inbox triage and email management.",
     "pri_tracker": "Track Programmable Real Estate Investment metrics and milestones.",
     "file_search": "Fast local file search with agent-assisted ranking.",
     "finance_summaries": "Daily and monthly finance rollups from your data sources.",

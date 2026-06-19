@@ -76,3 +76,23 @@ def cache_set_pickle(data_dir: Path, namespace: str, key: str, value: Any) -> No
     path = _cache_file(data_dir, namespace, key, ext="pkl")
     with path.open("wb") as handle:
         pickle.dump(value, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def cache_clear_namespace(data_dir: Path, namespace: str) -> int:
+    """Delete all cached entries in *namespace*. Returns files removed."""
+    directory = Path(data_dir) / "cache" / namespace
+    if not directory.exists():
+        return 0
+    removed = 0
+    for path in directory.iterdir():
+        if path.is_file():
+            path.unlink()
+            removed += 1
+    return removed
+
+
+def cache_count_namespace(data_dir: Path, namespace: str) -> int:
+    directory = Path(data_dir) / "cache" / namespace
+    if not directory.exists():
+        return 0
+    return sum(1 for path in directory.iterdir() if path.is_file())

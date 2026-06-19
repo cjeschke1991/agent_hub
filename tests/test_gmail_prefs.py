@@ -98,12 +98,11 @@ def test_is_vip_sender():
     assert is_vip_sender("VIP Person <vip@example.com>", prefs)
 
 
-def test_prefs_to_context_includes_vip_and_calendar():
+def test_prefs_to_context_includes_vip_and_keywords():
     prefs = GmailPrefs(vip_senders=["vip@x.com"], boost_keywords=["invoice"])
-    ctx = prefs_to_context(prefs, calendar_context="Upcoming: Meeting at 2pm")
+    ctx = prefs_to_context(prefs)
     assert "vip@x.com" in ctx
     assert "invoice" in ctx
-    assert "Meeting at 2pm" in ctx
 
 
 def test_prefs_to_context_empty_returns_empty():

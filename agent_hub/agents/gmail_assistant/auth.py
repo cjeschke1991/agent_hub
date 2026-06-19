@@ -6,8 +6,6 @@ from pathlib import Path
 from agent_hub.core.config import GmailConfig, HubConfig, load_config
 
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
-CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
-ALL_SCOPES = GMAIL_SCOPES + [CALENDAR_SCOPE]
 
 _DEFAULT_TOKEN_PATH = Path.home() / ".agent_hub" / "gmail_token.json"
 
@@ -45,7 +43,7 @@ def _load_or_refresh_credentials(
     creds_path = Path(cfg.credentials_path)
     token_file = _token_path(cfg)
     token_file.parent.mkdir(parents=True, exist_ok=True)
-    login_scopes = oauth_scopes or ALL_SCOPES
+    login_scopes = oauth_scopes or GMAIL_SCOPES
 
     creds: Credentials | None = None
     if token_file.exists():
@@ -71,32 +69,11 @@ def _load_or_refresh_credentials(
     return creds
 
 
-def calendar_scope_granted(config: HubConfig | None = None) -> bool:
-    token_file = _token_path((config or load_config()).gmail)
-    if not token_file.exists():
-        return False
-    try:
-        return CALENDAR_SCOPE in set(_read_token_scopes(token_file))
-    except Exception:
-        return False
-
-
 def get_gmail_service(config: HubConfig | None = None):
     from googleapiclient.discovery import build
 
-    creds = _load_or_refresh_credentials(config, oauth_scopes=ALL_SCOPES)
+    creds = _load_or_refresh_credentials(config, oauth_scopes=GMAIL_SCOPES)
     return build("gmail", "v1", credentials=creds)
-
-
-def get_calendar_service(config: HubConfig | None = None):
-    from googleapiclient.discovery import build
-
-    if not calendar_scope_granted(config):
-        raise RuntimeError(
-            "Calendar access not granted. Sign out of Google in the Gmail tab and sign in again."
-        )
-    creds = _load_or_refresh_credentials(config, oauth_scopes=ALL_SCOPES)
-    return build("calendar", "v3", credentials=creds)
 
 
 def revoke_gmail_token(config: HubConfig | None = None) -> None:

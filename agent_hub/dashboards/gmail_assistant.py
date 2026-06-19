@@ -5,6 +5,10 @@ from typing import Any
 
 import streamlit as st
 
+from agent_hub.agents.gmail_assistant.analysis_cache import (
+    analysis_cache_count,
+    clear_analysis_cache,
+)
 from agent_hub.agents.gmail_assistant.auth import (
     get_gmail_service,
     gmail_credentials_configured,
@@ -12,9 +16,11 @@ from agent_hub.agents.gmail_assistant.auth import (
 )
 from agent_hub.agents.gmail_assistant.llm import CATEGORIES, EmailResult
 from agent_hub.agents.gmail_assistant.logic import (
+    clear_inbox_snapshot,
     delete_email_and_learn,
     keep_email_and_learn,
     load_and_analyze_inbox,
+    load_inbox_snapshot,
 )
 from agent_hub.agents.gmail_assistant.prefs import (
     GmailPrefs,
@@ -152,7 +158,7 @@ def _render_setup_guide() -> None:
         st.markdown(
             """
 1. Go to [Google Cloud Console](https://console.cloud.google.com/) and create a project.
-2. Enable the **Gmail API** and **Google Calendar API** for the project.
+2. Enable the **Gmail API** for the project.
 3. Under **APIs & Services → Credentials**, create an **OAuth 2.0 Client ID** (Desktop app).
 4. Download the JSON file (e.g. `client_secret.json`).
 5. Add the path to your `.env` file:
@@ -173,6 +179,11 @@ def _render_setup_guide() -> None:
 # ---------------------------------------------------------------------------
 
 def _render_main(config) -> None:
+    if "gmail_summary" not in st.session_state:
+        snapshot = load_inbox_snapshot(config)
+        if snapshot is not None:
+            st.session_state["gmail_summary"] = snapshot
+
     tab_inbox, tab_suggested, tab_categories, tab_prefs = st.tabs(
         ["📥 Inbox", "🗑️ Suggested Deletes", "📂 Categories", "⚙️ Preferences"]
     )
@@ -197,13 +208,33 @@ def _render_main(config) -> None:
 def _render_inbox_tab(config) -> None:
     st.markdown('<div class="gmail-section-title">Your Inbox</div>', unsafe_allow_html=True)
 
-    col_fetch, col_revoke = st.columns([3, 1])
+    col_fetch, col_clear, col_revoke = st.columns([2, 1, 1])
     with col_fetch:
         fetch_clicked = st.button("Fetch & Analyze Inbox", type="primary")
+    with col_clear:
+        cache_count = analysis_cache_count(config)
+        if st.button(
+            "Clear Analysis Cache",
+            help=(
+                "Delete saved AI analyses on disk. Your last inbox view stays until you fetch again. "
+                "The next fetch will re-run AI on every email."
+            ),
+        ):
+            removed = clear_analysis_cache(config)
+            st.session_state.pop("gmail_summary", None)
+            clear_inbox_snapshot(config)
+            st.success(
+                f"Cleared {removed} cached analysis(es). "
+                "Click **Fetch & Analyze Inbox** for fresh results."
+            )
+            st.rerun()
+        elif cache_count:
+            st.caption(f"{cache_count} AI analyses on disk")
     with col_revoke:
         if st.button("Sign out of Google", help="Delete stored OAuth token"):
             revoke_gmail_token(config)
             st.session_state.pop("gmail_summary", None)
+            clear_inbox_snapshot(config)
             st.success("Signed out. Click 'Fetch & Analyze' to sign in again.")
             st.rerun()
 
@@ -220,11 +251,17 @@ def _render_inbox_tab(config) -> None:
 
     summary = st.session_state.get("gmail_summary")
     if summary is None:
-        st.caption("Click **Fetch & Analyze Inbox** to load your emails.")
+        cache_count = analysis_cache_count(config)
+        if cache_count:
+            st.info(
+                f"You have **{cache_count}** saved AI analyses on disk, but nothing is loaded in the "
+                "dashboard yet. Click **Fetch & Analyze Inbox** on the Inbox tab — cached emails "
+                "load instantly; only new ones call the AI.",
+                icon="ℹ️",
+            )
+        else:
+            st.caption("Click **Fetch & Analyze Inbox** to load your emails.")
         return
-
-    if summary.calendar_warning:
-        st.warning(summary.calendar_warning, icon="📅")
 
     if summary.priority:
         st.markdown('<div class="gmail-section-title">Priority — Must Read Today</div>', unsafe_allow_html=True)
@@ -344,7 +381,15 @@ def _render_categories_tab(config) -> None:
     st.markdown('<div class="gmail-section-title">By Category</div>', unsafe_allow_html=True)
     summary = st.session_state.get("gmail_summary")
     if summary is None:
-        st.caption("Fetch your inbox first (go to the **Inbox** tab).")
+        cache_count = analysis_cache_count(config)
+        if cache_count:
+            st.info(
+                f"**{cache_count}** AI analyses are saved on disk, but Categories only shows your "
+                "last inbox fetch. Go to the **Inbox** tab and click **Fetch & Analyze Inbox**.",
+                icon="ℹ️",
+            )
+        else:
+            st.caption("Fetch your inbox first (go to the **Inbox** tab).")
         return
 
     for cat in CATEGORIES:

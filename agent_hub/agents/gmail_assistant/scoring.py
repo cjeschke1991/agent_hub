@@ -16,15 +16,12 @@ DELETE_CONFIDENCE_THRESHOLD = 0.85
 MAX_IMPORTANCE_FOR_DELETE = 3
 VIP_BOOST = 2
 KEYWORD_BOOST = 1
-CALENDAR_BOOST = 2
 REPUTATION_KEEP_BOOST = 1
 
 
 def apply_safety_gates(
     result: EmailResult,
     prefs: GmailPrefs,
-    *,
-    calendar_emails: set[str] | None = None,
 ) -> EmailResult:
     """Adjust importance and suppress unsafe delete suggestions."""
     importance = result.importance
@@ -45,10 +42,6 @@ def apply_safety_gates(
             importance += KEYWORD_BOOST
             urgency_bits.append(f"keyword: {keyword}")
             break
-
-    if calendar_emails and extract_sender_email(result.sender) in calendar_emails:
-        importance += CALENDAR_BOOST
-        urgency_bits.append("matches upcoming calendar event")
 
     if result.deadline:
         urgency_bits.append(f"deadline: {result.deadline}")

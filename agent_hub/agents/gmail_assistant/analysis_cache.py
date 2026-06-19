@@ -5,7 +5,12 @@ from typing import Any
 
 from agent_hub.agents.gmail_assistant.gmail import RawEmail
 from agent_hub.agents.gmail_assistant.llm import EmailResult
-from agent_hub.core.api_cache import cache_get_json, cache_set_json
+from agent_hub.core.api_cache import (
+    cache_clear_namespace,
+    cache_count_namespace,
+    cache_get_json,
+    cache_set_json,
+)
 from agent_hub.core.config import HubConfig, load_config
 
 _NAMESPACE = "gmail_analysis"
@@ -50,3 +55,14 @@ def result_from_cache(entry: dict[str, Any], email: RawEmail) -> EmailResult:
         requires_action=bool(entry.get("requires_action", False)),
         deadline=str(entry.get("deadline", "")),
     )
+
+
+def analysis_cache_count(config: HubConfig | None = None) -> int:
+    cfg = config or load_config()
+    return cache_count_namespace(cfg.data_dir, _NAMESPACE)
+
+
+def clear_analysis_cache(config: HubConfig | None = None) -> int:
+    """Clear stored LLM analysis for all emails. Returns entries removed."""
+    cfg = config or load_config()
+    return cache_clear_namespace(cfg.data_dir, _NAMESPACE)
