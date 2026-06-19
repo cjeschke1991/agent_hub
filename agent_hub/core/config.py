@@ -100,10 +100,18 @@ class MusicRecommenderConfig:
 
 
 @dataclass
+class MorningEmailConfig:
+    to: str = "njeschke19@gmail.com"
+    subject: str = "Good morning!"
+    body: str = "Good morning to my AMAZING baby! :)"
+
+
+@dataclass
 class GmailConfig:
     credentials_path: str = ""
     max_emails: int = 50
     token_path: str = ""  # defaults to ~/.agent_hub/gmail_token.json if empty
+    morning_email: MorningEmailConfig = field(default_factory=MorningEmailConfig)
 
 
 @dataclass
@@ -163,6 +171,7 @@ def load_config(config_path: Path | None = None) -> HubConfig:
     tmdb_raw = raw.get("tmdb", {}) or {}
     omdb_raw = raw.get("omdb", {}) or {}
     gmail_raw = raw.get("gmail", {}) or {}
+    morning_raw = gmail_raw.get("morning_email", {}) or {}
     movie_raw = raw.get("movie_recommender", {}) or {}
     weights_raw = movie_raw.get("weights", {}) or {}
     spotify_raw = raw.get("spotify", {}) or {}
@@ -200,6 +209,14 @@ def load_config(config_path: Path | None = None) -> HubConfig:
             ).strip(),
             max_emails=int(gmail_raw.get("max_emails", 50)),
             token_path=str(gmail_raw.get("token_path", "") or "").strip(),
+            morning_email=MorningEmailConfig(
+                to=str(morning_raw.get("to", "njeschke19@gmail.com") or "njeschke19@gmail.com"),
+                subject=str(morning_raw.get("subject", "Good morning!") or "Good morning!"),
+                body=str(
+                    morning_raw.get("body", "Good morning to my AMAZING baby! :)")
+                    or "Good morning to my AMAZING baby! :)"
+                ),
+            ),
         ),
         spotify=SpotifyConfig(
             client_id=spotify_client_id.strip(),

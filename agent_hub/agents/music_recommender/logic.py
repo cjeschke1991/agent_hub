@@ -51,9 +51,12 @@ from agent_hub.agents.music_recommender.spotify import (
     spotify_configured,
     spotify_web_api_available,
 )
+from agent_hub.core.api_cache import cache_get_pickle, cache_key, cache_set_pickle
 from agent_hub.core.config import HubConfig, load_config
 from agent_hub.core.music_db import connect, init_db, pandora_artist_id
 from agent_hub.core.slices import utc_now_iso
+
+_MUSIC_RECOMMEND_CACHE_TTL = 3600
 
 
 class MusicValidationError(ValueError):
@@ -1715,6 +1718,33 @@ def recommend(
             "Add at least one liked song or artist to get recommendations."
         )
 
+    rec_cache_id = cache_key(
+        filters.year_min,
+        filters.year_max,
+        sorted(filters.genre_names or []),
+        filters.song_count,
+        filters.artist_count,
+        filters.energy_min,
+        filters.energy_max,
+        filters.valence_min,
+        filters.valence_max,
+        filters.include_energy,
+        filters.include_valence,
+        filters.include_year,
+        sorted(s.spotify_id for s in liked_songs),
+        sorted(a.spotify_id for a in liked_artists),
+        sorted(s.spotify_id for s in disliked_songs),
+        sorted(a.spotify_id for a in disliked_artists),
+    )
+    cached_recs = cache_get_pickle(
+        config.data_dir,
+        "music_recommendations",
+        rec_cache_id,
+        ttl_seconds=_MUSIC_RECOMMEND_CACHE_TTL,
+    )
+    if cached_recs is not None:
+        return cached_recs
+
     (
         liked_genres, disliked_genres,
         liked_energy, liked_valence, liked_danceability,
@@ -2193,4 +2223,6 @@ def recommend(
     scored_artists.sort(key=lambda x: x.score.total, reverse=True)
     top_artists = scored_artists[: filters.artist_count]
 
-    return top_songs, top_artists
+    result = (top_songs, top_artists)
+    cache_set_pickle(config.data_dir, "music_recommendations", rec_cache_id, result)
+    return result

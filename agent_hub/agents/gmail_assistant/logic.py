@@ -4,13 +4,22 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from agent_hub.agents.gmail_assistant.auth import calendar_scope_granted, get_calendar_service
+from agent_hub.agents.gmail_assistant.analysis_cache import (
+    load_cached_analysis,
+    result_from_cache,
+    save_cached_analysis,
+)
+from agent_hub.agents.gmail_assistant.auth import (
+    calendar_scope_granted,
+    get_calendar_service,
+    get_gmail_service,
+)
 from agent_hub.agents.gmail_assistant.calendar import (
     calendar_emails_from_events,
     fetch_upcoming_events,
     format_calendar_context,
 )
-from agent_hub.agents.gmail_assistant.gmail import fetch_emails, trash_email
+from agent_hub.agents.gmail_assistant.gmail import RawEmail, fetch_emails, send_email, trash_email
 from agent_hub.agents.gmail_assistant.llm import CATEGORIES, EmailResult, analyze_emails_batch
 from agent_hub.agents.gmail_assistant.prefs import (
     load_prefs,
@@ -32,6 +41,23 @@ class InboxSummary:
     priority: list[EmailResult] = field(default_factory=list)
     calendar_available: bool = True
     calendar_warning: str = ""
+    cached_count: int = 0
+    analyzed_count: int = 0
+
+
+def _split_cached_emails(
+    emails: list[RawEmail],
+    config: HubConfig,
+) -> tuple[list[EmailResult], list[RawEmail]]:
+    cached_results: list[EmailResult] = []
+    to_analyze: list[RawEmail] = []
+    for email in emails:
+        entry = load_cached_analysis(email.msg_id, config)
+        if entry:
+            cached_results.append(result_from_cache(entry, email))
+        else:
+            to_analyze.append(email)
+    return cached_results, to_analyze
 
 
 def load_and_analyze_inbox(
@@ -65,7 +91,16 @@ def load_and_analyze_inbox(
     pref_context = prefs_to_context(prefs, calendar_context=calendar_context)
 
     raw_emails = fetch_emails(service, max_results=cfg.gmail.max_emails, label=label)
-    analyzed = analyze_emails_batch(raw_emails, pref_context, prefs=prefs)
+    cached_results, to_analyze = _split_cached_emails(raw_emails, cfg)
+
+    newly_analyzed = analyze_emails_batch(to_analyze, pref_context, prefs=prefs)
+    for result in newly_analyzed:
+        if not result.summary.startswith("[Analysis failed:"):
+            save_cached_analysis(result, cfg)
+
+    analyzed_by_id = {r.msg_id: r for r in cached_results + newly_analyzed}
+    analyzed = [analyzed_by_id[email.msg_id] for email in raw_emails if email.msg_id in analyzed_by_id]
+
     results = [
         apply_safety_gates(r, prefs, calendar_emails=calendar_emails) for r in analyzed
     ]
@@ -89,6 +124,8 @@ def load_and_analyze_inbox(
         priority=priority,
         calendar_available=calendar_available,
         calendar_warning=calendar_warning,
+        cached_count=len(cached_results),
+        analyzed_count=len(newly_analyzed),
     )
 
 
@@ -106,3 +143,20 @@ def keep_email_and_learn(
     config: HubConfig | None = None,
 ) -> None:
     record_keep(result.sender, config=config)
+
+
+def send_morning_email(config: HubConfig | None = None, *, to: str | None = None) -> str:
+    """Send the configured daily morning email. Returns the Gmail message id."""
+    cfg = config or load_config()
+    morning = cfg.gmail.morning_email
+    recipient = (to or morning.to).strip()
+    if not recipient:
+        raise ValueError("Morning email recipient is not configured.")
+    service = get_gmail_service(cfg)
+    sent = send_email(
+        service,
+        to=recipient,
+        subject=morning.subject.strip(),
+        body=morning.body,
+    )
+    return str(sent.get("id", ""))

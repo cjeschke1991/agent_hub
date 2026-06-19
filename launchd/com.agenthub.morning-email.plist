@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.agenthub.morning-email</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/clayjeschke/cursor_projects/agent_hub/.venv/bin/python</string>
+        <string>-m</string>
+        <string>agent_hub.agents.gmail_assistant.cli</string>
+        <string>send-morning-email</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>7</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>/Users/clayjeschke/cursor_projects/agent_hub</string>
+    <key>StandardOutPath</key>
+    <string>/Users/clayjeschke/cursor_projects/agent_hub/data/logs/launchd-morning-email.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/clayjeschke/cursor_projects/agent_hub/data/logs/launchd-morning-email.err.log</string>
+</dict>
+</plist>

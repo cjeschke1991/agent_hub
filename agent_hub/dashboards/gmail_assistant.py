@@ -233,6 +233,16 @@ def _render_inbox_tab(config) -> None:
     avg_imp = (
         sum(r.importance for r in summary.results) / n_total if n_total else 0
     )
+    cache_note = ""
+    if summary.cached_count or summary.analyzed_count:
+        cache_note = (
+            f"<div class='gmail-hero-stat'>"
+            f"<div class='value'>{summary.cached_count}</div>"
+            f"<div class='label'>From cache</div></div>"
+            f"<div class='gmail-hero-stat'>"
+            f"<div class='value'>{summary.analyzed_count}</div>"
+            f"<div class='label'>Newly analyzed</div></div>"
+        )
     st.markdown(
         f"""
         <div class="gmail-hero">
@@ -240,6 +250,7 @@ def _render_inbox_tab(config) -> None:
             <div class="gmail-hero-stat"><div class="value">{n_total}</div><div class="label">Emails analyzed</div></div>
             <div class="gmail-hero-stat"><div class="value">{n_delete}</div><div class="label">Suggested deletes</div></div>
             <div class="gmail-hero-stat"><div class="value">{avg_imp:.1f}</div><div class="label">Avg importance</div></div>
+            {cache_note}
           </div>
         </div>
         """,

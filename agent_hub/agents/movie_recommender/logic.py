@@ -18,9 +18,13 @@ from agent_hub.agents.movie_recommender.tmdb import (
     list_genres,
     search_movies,
 )
+from agent_hub.core.api_cache import cache_get_pickle, cache_key, cache_set_pickle
 from agent_hub.core.config import HubConfig, load_config
 from agent_hub.core.movie_db import connect, init_db
+from agent_hub.core.parallel import map_parallel
 from agent_hub.core.slices import utc_now_iso
+
+_RECOMMEND_CACHE_TTL = 3600
 
 KIDS_MOVIE_GENRES = frozenset({"Family", "Animation"})
 KIDS_TMDB_GENRE_IDS = (10751, 16)
@@ -531,6 +535,18 @@ def _collect_candidate_ids(filters: RecommendFilters, liked: list[TasteMovie], c
     return candidate_ids
 
 
+def _recommend_cache_key(filters: RecommendFilters, liked: list[TasteMovie], disliked: list[TasteMovie]) -> str:
+    return cache_key(
+        filters.year_min,
+        filters.year_max,
+        sorted(filters.genre_names),
+        filters.count,
+        filters.kids_only,
+        sorted(movie.tmdb_id for movie in liked),
+        sorted(movie.tmdb_id for movie in disliked),
+    )
+
+
 def recommend(filters: RecommendFilters, config: HubConfig | None = None) -> list[Recommendation]:
     config = config or load_config()
     liked = list_liked(config)
@@ -542,27 +558,39 @@ def recommend(filters: RecommendFilters, config: HubConfig | None = None) -> lis
     if filters.count < 1:
         raise MovieValidationError("Recommendation count must be at least 1.")
 
+    disliked_movies = list_disliked(config)
+    cache_id = _recommend_cache_key(filters, liked, disliked_movies)
+    cached = cache_get_pickle(
+        config.data_dir,
+        "movie_recommendations",
+        cache_id,
+        ttl_seconds=_RECOMMEND_CACHE_TTL,
+    )
+    if cached is not None:
+        return cached
+
     try:
         candidate_ids = _collect_candidate_ids(filters, liked, config)
     except TmdbConfigError:
         raise
 
-    disliked = _taste_profile_details(list_disliked(config), config)
+    disliked = _taste_profile_details(disliked_movies, config)
     liked_details = _taste_profile_details(liked, config)
     weights = config.movie_recommender.weights
 
-    recommendations: list[Recommendation] = []
-    for tmdb_id in candidate_ids:
+    def _score_candidate(tmdb_id: int) -> Recommendation | None:
         try:
             details = get_movie_details(tmdb_id, config=config)
         except Exception:
-            continue
-        if details.year is not None and (details.year < filters.year_min or details.year > filters.year_max):
-            continue
-        if filters.genre_names and not set(details.genres) & {name for name in filters.genre_names}:
-            continue
+            return None
+        if details.year is not None and (
+            details.year < filters.year_min or details.year > filters.year_max
+        ):
+            return None
+        if filters.genre_names and not set(details.genres) & set(filters.genre_names):
+            return None
         if filters.kids_only and not is_kids_movie(details):
-            continue
+            return None
         score = composite_score(
             details,
             liked_details,
@@ -572,7 +600,12 @@ def recommend(filters: RecommendFilters, config: HubConfig | None = None) -> lis
             weights,
         )
         reason = recommendation_reason(details, liked_details, disliked, score)
-        recommendations.append(Recommendation(movie=details, score=score, reason=reason))
+        return Recommendation(movie=details, score=score, reason=reason)
 
+    recommendations = [
+        rec for rec in map_parallel(candidate_ids, _score_candidate, max_workers=8) if rec
+    ]
     recommendations.sort(key=lambda item: item.score.total, reverse=True)
-    return recommendations[: filters.count]
+    final = recommendations[: filters.count]
+    cache_set_pickle(config.data_dir, "movie_recommendations", cache_id, final)
+    return final

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import base64
-import email as email_lib
 import re
 from dataclasses import dataclass, field
 from typing import Any
+
+from agent_hub.core.parallel import map_parallel
+
+_FETCH_WORKERS = 8
 
 
 @dataclass
@@ -28,18 +31,21 @@ def fetch_emails(service, max_results: int = 50, label: str = "INBOX") -> list[R
         .list(userId="me", labelIds=[label], maxResults=max_results)
         .execute()
     )
-    messages = result.get("messages", [])
-    emails: list[RawEmail] = []
-    for msg_stub in messages:
-        msg_id = msg_stub["id"]
+    message_ids = [stub["id"] for stub in result.get("messages", []) if stub.get("id")]
+    if not message_ids:
+        return []
+
+    def _fetch_one(msg_id: str) -> RawEmail | None:
         msg = (
             service.users()
             .messages()
             .get(userId="me", id=msg_id, format="full")
             .execute()
         )
-        emails.append(_parse_message(msg))
-    return emails
+        return _parse_message(msg)
+
+    fetched = map_parallel(message_ids, _fetch_one, max_workers=_FETCH_WORKERS)
+    return [email for email in fetched if email is not None]
 
 
 def trash_email(service, msg_id: str) -> None:
@@ -47,15 +53,22 @@ def trash_email(service, msg_id: str) -> None:
     service.users().messages().trash(userId="me", id=msg_id).execute()
 
 
+def send_email(service, *, to: str, subject: str, body: str) -> dict[str, Any]:
+    """Send a plain-text email from the authenticated Gmail account."""
+    from email.mime.text import MIMEText
+
+    message = MIMEText(body)
+    message["to"] = to
+    message["subject"] = subject
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+    return service.users().messages().send(userId="me", body={"raw": raw}).execute()
+
+
 def mark_read(service, msg_id: str) -> None:
     service.users().messages().modify(
         userId="me", id=msg_id, body={"removeLabelIds": ["UNREAD"]}
     ).execute()
 
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
 
 def _header(headers: list[dict[str, str]], name: str) -> str:
     for h in headers:
@@ -101,7 +114,6 @@ def _parse_message(msg: dict[str, Any]) -> RawEmail:
     labels = msg.get("labelIds", [])
 
     body = _extract_text(payload).strip()
-    # Truncate very long bodies to avoid blowing LLM context windows
     if len(body) > 4000:
         body = body[:4000] + "\n[… truncated …]"
 

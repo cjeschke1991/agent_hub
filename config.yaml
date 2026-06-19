@@ -4,6 +4,10 @@ data_dir: data
 gmail:
   credentials_path: ""   # path to client_secret.json from Google Cloud Console
   max_emails: 50
+  morning_email:
+    to: njeschke19@gmail.com
+    subject: Good morning!
+    body: "Good morning to my AMAZING baby! :)"
 
 slice_order:
   - priorities

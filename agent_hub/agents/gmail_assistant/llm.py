@@ -11,6 +11,9 @@ from agent_hub.agents.gmail_assistant.prefs import (
     get_sender_reputation,
     is_vip_sender,
 )
+from agent_hub.core.parallel import map_parallel
+
+_LLM_WORKERS = 5
 
 CATEGORIES = [
     "Finance",
@@ -93,30 +96,32 @@ def analyze_emails_batch(
     *,
     prefs: GmailPrefs | None = None,
 ) -> list[EmailResult]:
-    results: list[EmailResult] = []
-    for email in emails:
+    if not emails:
+        return []
+
+    def _analyze_one(email: RawEmail) -> EmailResult:
         try:
-            results.append(analyze_email(email, pref_context, prefs=prefs))
+            return analyze_email(email, pref_context, prefs=prefs)
         except Exception as exc:
-            results.append(
-                EmailResult(
-                    msg_id=email.msg_id,
-                    subject=email.subject,
-                    sender=email.sender,
-                    date=email.date,
-                    summary=f"[Analysis failed: {exc}]",
-                    importance=5,
-                    category="Other",
-                    should_delete=False,
-                    delete_reason="",
-                    urgency_reason="analysis failed",
-                    delete_confidence=0.0,
-                    requires_action=False,
-                    deadline="",
-                    raw=email,
-                )
+            return EmailResult(
+                msg_id=email.msg_id,
+                subject=email.subject,
+                sender=email.sender,
+                date=email.date,
+                summary=f"[Analysis failed: {exc}]",
+                importance=5,
+                category="Other",
+                should_delete=False,
+                delete_reason="",
+                raw=email,
+                urgency_reason="analysis failed",
+                delete_confidence=0.0,
+                requires_action=False,
+                deadline="",
             )
-    return results
+
+    analyzed = map_parallel(emails, _analyze_one, max_workers=_LLM_WORKERS)
+    return [result for result in analyzed if result is not None]
 
 
 def _build_user_prompt(

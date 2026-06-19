@@ -27,6 +27,7 @@ gmail-stub = "agent_hub.agents.gmail_stub.cli:app"
 briefing = "agent_hub.agents.daily_briefing.cli:app"
 pinball = "agent_hub.agents.pinball_tracker.cli:app"
 movie = "agent_hub.agents.movie_recommender.cli:app"
+gmail = "agent_hub.agents.gmail_assistant.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -4,7 +4,7 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 
 from agent_hub.agents.movie_recommender.omdb import (
     fetch_omdb_details,
@@ -12,10 +12,12 @@ from agent_hub.agents.movie_recommender.omdb import (
     parse_metacritic_score,
     parse_percent_score,
 )
+from agent_hub.core.api_cache import cache_get_json, cache_set_json
 from agent_hub.core.config import HubConfig, load_config
 
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w342"
+_TMDB_CACHE_TTL = 7 * 24 * 3600
 
 
 class TmdbError(RuntimeError):
@@ -193,6 +195,16 @@ def search_movies(query: str, config: HubConfig | None = None) -> list[MovieSear
 
 
 def get_movie_details(tmdb_id: int, config: HubConfig | None = None) -> MovieDetails:
+    config = config or load_config()
+    cached = cache_get_json(
+        config.data_dir,
+        "tmdb_movies",
+        str(tmdb_id),
+        ttl_seconds=_TMDB_CACHE_TTL,
+    )
+    if cached:
+        return MovieDetails(**cached)
+
     payload = _request(
         f"/movie/{tmdb_id}",
         {"append_to_response": "credits,keywords"},
@@ -200,14 +212,15 @@ def get_movie_details(tmdb_id: int, config: HubConfig | None = None) -> MovieDet
     )
     details = _parse_movie_details(payload)
     omdb = fetch_omdb_details(details.imdb_id, config=config)
-    if not omdb:
-        return details
-    return replace(
-        details,
-        rotten_tomatoes_score=omdb.rotten_tomatoes_score,
-        metacritic_score=omdb.metacritic_score,
-        imdb_rating=omdb.imdb_rating,
-    )
+    if omdb:
+        details = replace(
+            details,
+            rotten_tomatoes_score=omdb.rotten_tomatoes_score,
+            metacritic_score=omdb.metacritic_score,
+            imdb_rating=omdb.imdb_rating,
+        )
+    cache_set_json(config.data_dir, "tmdb_movies", str(tmdb_id), asdict(details))
+    return details
 
 
 def list_genres(config: HubConfig | None = None) -> list[Genre]:
