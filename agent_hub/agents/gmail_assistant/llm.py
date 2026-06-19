@@ -6,6 +6,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent_hub.agents.gmail_assistant.gmail import RawEmail
+from agent_hub.agents.gmail_assistant.prefs import (
+    GmailPrefs,
+    get_sender_reputation,
+    is_vip_sender,
+)
 
 CATEGORIES = [
     "Finance",
@@ -19,12 +24,19 @@ CATEGORIES = [
 ]
 
 _SYSTEM_PROMPT = """\
-You are an intelligent email assistant. Given an email, return a JSON object with:
-- "summary": a 1-3 sentence plain-English summary of the key points.
-- "importance": an integer 0-10 (10 = extremely urgent/important, 0 = spam/irrelevant).
+You are an intelligent email assistant. Analyze the email carefully and return JSON with:
+- "summary": 1-3 sentences covering key points and any action needed.
+- "requires_action": true if the user must reply, pay, sign, or do something; false otherwise.
+- "deadline": ISO date or human-readable deadline if mentioned, else empty string.
+- "importance": integer 0-10 (10 = extremely urgent/important, 0 = spam/irrelevant).
+- "urgency_reason": short phrase explaining the importance score.
 - "category": one of """ + json.dumps(CATEGORIES) + """.
-- "should_delete": true if this email is clearly safe to delete (spam, promotions, automated notifications), false otherwise.
-- "delete_reason": a short phrase explaining why it should be deleted (empty string if should_delete is false).
+- "should_delete": true only for clear junk (spam, promos, automated notifications with no value).
+- "delete_confidence": float 0.0-1.0 — how confident you are deletion is safe.
+- "delete_reason": short phrase if should_delete is true, else empty string.
+
+Be conservative: when unsure about deletion, set should_delete=false and delete_confidence below 0.5.
+VIP senders and protected senders must never be marked for deletion.
 
 Reply with valid JSON only. No markdown fences, no extra text.
 """
@@ -42,11 +54,19 @@ class EmailResult:
     should_delete: bool
     delete_reason: str
     raw: RawEmail = field(repr=False)
+    urgency_reason: str = ""
+    delete_confidence: float = 0.0
+    requires_action: bool = False
+    deadline: str = ""
 
 
-def analyze_email(email: RawEmail, pref_context: str = "") -> EmailResult:
-    """Call the LLM to analyze a single email and return a structured result."""
-    user_content = _build_user_prompt(email, pref_context)
+def analyze_email(
+    email: RawEmail,
+    pref_context: str = "",
+    *,
+    prefs: GmailPrefs | None = None,
+) -> EmailResult:
+    user_content = _build_user_prompt(email, pref_context, prefs=prefs)
     response_text = _call_llm(user_content)
     data = _parse_json(response_text)
     return EmailResult(
@@ -59,17 +79,24 @@ def analyze_email(email: RawEmail, pref_context: str = "") -> EmailResult:
         category=data.get("category", "Other"),
         should_delete=bool(data.get("should_delete", False)),
         delete_reason=str(data.get("delete_reason", "")),
+        urgency_reason=str(data.get("urgency_reason", "")),
+        delete_confidence=float(data.get("delete_confidence", 0.0)),
+        requires_action=bool(data.get("requires_action", False)),
+        deadline=str(data.get("deadline", "")),
         raw=email,
     )
 
 
 def analyze_emails_batch(
-    emails: list[RawEmail], pref_context: str = ""
+    emails: list[RawEmail],
+    pref_context: str = "",
+    *,
+    prefs: GmailPrefs | None = None,
 ) -> list[EmailResult]:
     results: list[EmailResult] = []
     for email in emails:
         try:
-            results.append(analyze_email(email, pref_context))
+            results.append(analyze_email(email, pref_context, prefs=prefs))
         except Exception as exc:
             results.append(
                 EmailResult(
@@ -82,26 +109,44 @@ def analyze_emails_batch(
                     category="Other",
                     should_delete=False,
                     delete_reason="",
+                    urgency_reason="analysis failed",
+                    delete_confidence=0.0,
+                    requires_action=False,
+                    deadline="",
                     raw=email,
                 )
             )
     return results
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def _build_user_prompt(email: RawEmail, pref_context: str) -> str:
-    parts = [
-        f"Subject: {email.subject}",
-        f"From: {email.sender}",
-        f"Date: {email.date}",
-        "",
-        email.body or email.snippet or "(empty)",
-    ]
+def _build_user_prompt(
+    email: RawEmail,
+    pref_context: str,
+    *,
+    prefs: GmailPrefs | None = None,
+) -> str:
+    parts: list[str] = []
     if pref_context:
-        parts = [f"User preferences:\n{pref_context}\n"] + parts
+        parts.append(f"Shared context:\n{pref_context}\n")
+
+    if prefs:
+        rep = get_sender_reputation(email.sender, prefs)
+        if rep.keep or rep.delete:
+            parts.append(
+                f"Sender history: kept {rep.keep}×, deleted {rep.delete}× by user."
+            )
+        if is_vip_sender(email.sender, prefs):
+            parts.append("This sender is VIP — treat as high importance, never delete.")
+
+    parts.extend(
+        [
+            f"Subject: {email.subject}",
+            f"From: {email.sender}",
+            f"Date: {email.date}",
+            "",
+            email.body or email.snippet or "(empty)",
+        ]
+    )
     return "\n".join(parts)
 
 
@@ -121,14 +166,13 @@ def _call_llm(user_content: str) -> str:
             {"role": "user", "content": user_content},
         ],
         temperature=0.2,
-        max_tokens=400,
+        max_tokens=500,
     )
     return response.choices[0].message.content or ""
 
 
 def _parse_json(text: str) -> dict[str, Any]:
     text = text.strip()
-    # Strip optional markdown fences
     if text.startswith("```"):
         text = text.split("\n", 1)[-1]
         text = text.rsplit("```", 1)[0]

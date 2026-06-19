@@ -54,6 +54,10 @@ def test_analyze_email_calls_llm(monkeypatch):
             "category": "Work",
             "should_delete": False,
             "delete_reason": "",
+            "urgency_reason": "From manager",
+            "delete_confidence": 0.1,
+            "requires_action": True,
+            "deadline": "2026-06-20",
         }
     )
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
@@ -70,6 +74,9 @@ def test_analyze_email_calls_llm(monkeypatch):
     assert result.category == "Work"
     assert result.summary == "A test email."
     assert result.should_delete is False
+    assert result.requires_action is True
+    assert result.deadline == "2026-06-20"
+    assert result.urgency_reason == "From manager"
 
 
 def test_analyze_email_no_api_key_raises(monkeypatch):

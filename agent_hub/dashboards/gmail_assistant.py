@@ -68,6 +68,9 @@ _CSS = """
 .badge-low    { background:#1a2a1a; color:#4ade80; }
 .badge-cat    { background:#1e1e3a; color:#818cf8; }
 .badge-delete { background:#3d1a1a; color:#f87171; }
+.badge-action { background:#1a2a3a; color:#38bdf8; }
+.badge-deadline { background:#2a1a3a; color:#c084fc; }
+.badge-urgency { background:#1a1a1a; color:#aaa; font-weight:400; }
 
 .gmail-section-title {
     font-size: 1.3rem;
@@ -144,7 +147,7 @@ def _render_setup_guide() -> None:
         st.markdown(
             """
 1. Go to [Google Cloud Console](https://console.cloud.google.com/) and create a project.
-2. Enable the **Gmail API** for the project.
+2. Enable the **Gmail API** and **Google Calendar API** for the project.
 3. Under **APIs & Services → Credentials**, create an **OAuth 2.0 Client ID** (Desktop app).
 4. Download the JSON file (e.g. `client_secret.json`).
 5. Add the path to your `.env` file:
@@ -214,6 +217,15 @@ def _render_inbox_tab(config) -> None:
     if summary is None:
         st.caption("Click **Fetch & Analyze Inbox** to load your emails.")
         return
+
+    if summary.calendar_warning:
+        st.warning(summary.calendar_warning, icon="📅")
+
+    if summary.priority:
+        st.markdown('<div class="gmail-section-title">Priority — Must Read Today</div>', unsafe_allow_html=True)
+        for result in summary.priority:
+            _render_email_card(result, config, compact=True)
+        st.divider()
 
     # Hero stats
     n_total = len(summary.results)
@@ -335,22 +347,31 @@ def _render_categories_tab(config) -> None:
 def _render_prefs_tab(config) -> None:
     st.markdown('<div class="gmail-section-title">Preferences</div>', unsafe_allow_html=True)
     st.caption(
-        "Teach the assistant which senders to always or never delete. "
-        "These rules are injected into every AI analysis."
+        "Teach the assistant which senders matter most, which to ignore, and which keywords signal urgency."
     )
 
     prefs = load_prefs(config)
 
     with st.form("gmail_prefs_form"):
-        delete_senders_raw = st.text_area(
-            "Always delete emails from (one sender per line)",
-            value="\n".join(prefs.delete_senders),
-            height=100,
+        vip_senders_raw = st.text_area(
+            "VIP senders (always high importance, never delete)",
+            value="\n".join(prefs.vip_senders),
+            height=80,
         )
         keep_senders_raw = st.text_area(
-            "Never delete emails from (one sender per line)",
+            "Protected senders (never delete)",
             value="\n".join(prefs.keep_senders),
-            height=100,
+            height=80,
+        )
+        delete_senders_raw = st.text_area(
+            "Low-value senders (safe to delete)",
+            value="\n".join(prefs.delete_senders),
+            height=80,
+        )
+        boost_keywords_raw = st.text_area(
+            "Important keywords (boost urgency, one per line)",
+            value="\n".join(prefs.boost_keywords),
+            height=80,
         )
         delete_subjects_raw = st.text_area(
             "Delete if subject contains (one keyword per line)",
@@ -366,10 +387,13 @@ def _render_prefs_tab(config) -> None:
 
     if saved:
         new_prefs = GmailPrefs(
-            delete_senders=[s.strip().lower() for s in delete_senders_raw.splitlines() if s.strip()],
+            vip_senders=[s.strip().lower() for s in vip_senders_raw.splitlines() if s.strip()],
             keep_senders=[s.strip().lower() for s in keep_senders_raw.splitlines() if s.strip()],
+            delete_senders=[s.strip().lower() for s in delete_senders_raw.splitlines() if s.strip()],
+            boost_keywords=[s.strip() for s in boost_keywords_raw.splitlines() if s.strip()],
             delete_subjects=[s.strip() for s in delete_subjects_raw.splitlines() if s.strip()],
             notes=notes.strip(),
+            sender_reputation=prefs.sender_reputation,
         )
         save_prefs(new_prefs, config)
         st.success("Preferences saved! They will be used on the next inbox fetch.")
@@ -396,16 +420,31 @@ def _render_email_card(
     result: EmailResult,
     config,
     show_delete_reason: bool = False,
+    compact: bool = False,
 ) -> None:
     pending_key = f"gmail_pending_delete_{result.msg_id}"
     is_pending = st.session_state.get(pending_key, False)
 
     badge_imp = _importance_badge(result.importance)
     badge_cat = f'<span class="gmail-badge badge-cat">{result.category}</span>'
+    badge_action = (
+        '<span class="gmail-badge badge-action">Action needed</span>'
+        if result.requires_action
+        else ""
+    )
+    badge_deadline = (
+        f'<span class="gmail-badge badge-deadline">Due: {result.deadline}</span>'
+        if result.deadline
+        else ""
+    )
 
     delete_hint = ""
     if show_delete_reason and result.delete_reason:
         delete_hint = f'<span class="gmail-badge badge-delete">🗑 {result.delete_reason}</span>'
+
+    urgency_line = ""
+    if result.urgency_reason:
+        urgency_line = f'<div class="gmail-badge badge-urgency">{result.urgency_reason}</div>'
 
     with st.container():
         st.markdown(
@@ -413,12 +452,16 @@ def _render_email_card(
             <div class="gmail-card">
               <div class="gmail-subject">{result.subject}</div>
               <div class="gmail-meta">From: {result.sender} &nbsp;·&nbsp; {result.date}</div>
-              <div style="margin-bottom:6px;">{badge_imp}{badge_cat}{delete_hint}</div>
+              <div style="margin-bottom:6px;">{badge_imp}{badge_cat}{badge_action}{badge_deadline}{delete_hint}</div>
               <div class="gmail-summary">{result.summary}</div>
+              {urgency_line}
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+        if compact:
+            return
 
         col_del, col_keep, col_exp = st.columns([1, 1, 4])
 
