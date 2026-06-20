@@ -43,6 +43,12 @@ from agent_hub.agents.music_recommender.spotify import (
     spotify_configured,
     spotify_web_api_available,
 )
+from agent_hub.agents.music_recommender.music_scores import (
+    load_song_score,
+    load_artist_score,
+    save_song_score,
+    save_artist_score,
+)
 from agent_hub.core.config import load_config
 
 
@@ -421,6 +427,70 @@ def _render_letter_scroll_spy(scope_id: str) -> None:
 
 def _render_genres_caption(genres: list[str]) -> None:
     st.caption(f"Genres: {_format_genres(genres)}")
+
+
+def _render_music_score_widget(
+    spotify_id: str,
+    item_type: str,  # "song" | "artist"
+    *,
+    title: str = "",
+    artist: str = "",
+    name: str = "",
+    genres: list[str] | None = None,
+    ai_score: float | None = None,
+) -> None:
+    """0-10 selectbox with auto-save and red flash confirmation."""
+    saved_key = f"music_score_saved_{item_type}_{spotify_id}"
+    select_key = f"music_score_select_{item_type}_{spotify_id}"
+
+    # Determine current saved score.
+    current = (
+        load_song_score(spotify_id) if item_type == "song" else load_artist_score(spotify_id)
+    )
+    options = ["—"] + [str(i) for i in range(11)]
+    current_index = (current + 1) if current is not None else 0
+
+    score_col, label_col = st.columns([2, 3])
+    with score_col:
+        chosen = st.selectbox(
+            "Rate (0-10)",
+            options=options,
+            index=current_index,
+            key=select_key,
+            label_visibility="collapsed",
+        )
+    with label_col:
+        if st.session_state.get(saved_key):
+            st.markdown(
+                f'<span style="color:#dc3545;font-weight:600;">✓ {current}/10 saved</span>',
+                unsafe_allow_html=True,
+            )
+            st.session_state[saved_key] = False
+        else:
+            st.caption("Rate this recommendation")
+
+    if chosen != "—":
+        new_score = int(chosen)
+        if new_score != current:
+            if item_type == "song":
+                save_song_score(
+                    spotify_id,
+                    new_score,
+                    title=title,
+                    artist=artist,
+                    genres=genres,
+                    ai_score=ai_score,
+                )
+            else:
+                save_artist_score(
+                    spotify_id,
+                    new_score,
+                    name=name,
+                    genres=genres,
+                    ai_score=ai_score,
+                )
+            st.session_state[saved_key] = True
+            st.rerun()
 
 
 def _render_remove_pending_css() -> None:
@@ -1314,6 +1384,14 @@ def _render_recommendations() -> None:
                         type="primary" if item.track.spotify_id in wishlist_song_ids else "secondary",
                     ):
                         _add_song_wishlist(item.track.spotify_id, item.track.title)
+                _render_music_score_widget(
+                    item.track.spotify_id,
+                    "song",
+                    title=item.track.title,
+                    artist=item.track.artist,
+                    genres=item.track.genres,
+                    ai_score=item.score.total,
+                )
 
     if artist_recs:
         st.markdown("### Artists")
@@ -1376,6 +1454,13 @@ def _render_recommendations() -> None:
                         type="primary" if item.artist.spotify_id in wishlist_artist_ids else "secondary",
                     ):
                         _add_artist_wishlist(item.artist.spotify_id, item.artist.name)
+                _render_music_score_widget(
+                    item.artist.spotify_id,
+                    "artist",
+                    name=item.artist.name,
+                    genres=item.artist.genres,
+                    ai_score=item.score.total,
+                )
 
 
 def render() -> None:

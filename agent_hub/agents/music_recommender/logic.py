@@ -11,6 +11,11 @@ from agent_hub.agents.music_recommender.pandora import (
     track_details_from_pandora,
 )
 from agent_hub.agents.music_recommender.explain import artist_reason, song_reason
+from agent_hub.agents.music_recommender.music_scores import (
+    load_all_artist_scores,
+    load_all_song_scores,
+    user_score_multiplier,
+)
 from agent_hub.agents.music_recommender.scoring import (
     ArtistScoreBreakdown,
     SongScoreBreakdown,
@@ -1884,6 +1889,8 @@ def recommend(
         config=config,
     )
 
+    _user_song_scores = load_all_song_scores(config)
+
     def _score_track(
         track_id: str,
         zone_name: str,
@@ -1943,6 +1950,18 @@ def recommend(
             source_rank=details.source_rank,
             zone_weights=zone_weights_obj,
         )
+        # Apply user rating multiplier if this track has been rated.
+        user_rating = _user_song_scores.get(track_id)
+        if user_rating is not None:
+            mult = user_score_multiplier(user_rating)
+            scr = SongScoreBreakdown(
+                genre=scr.genre,
+                audio_features=scr.audio_features,
+                artist_affinity=scr.artist_affinity,
+                year=scr.year,
+                popularity=scr.popularity,
+                total=round(scr.total * mult, 1),
+            )
         reason = song_reason(
             candidate_title=details.title,
             candidate_artist=details.artist,
@@ -2219,6 +2238,19 @@ def recommend(
                 reason=reason,
             )
         )
+
+    _user_artist_scores = load_all_artist_scores(config)
+    for rec in scored_artists:
+        rating = _user_artist_scores.get(rec.artist.spotify_id)
+        if rating is not None:
+            mult = user_score_multiplier(rating)
+            rec.score = ArtistScoreBreakdown(
+                genre=rec.score.genre,
+                related_artists=rec.score.related_artists,
+                popularity=rec.score.popularity,
+                era=rec.score.era,
+                total=round(rec.score.total * mult, 1),
+            )
 
     scored_artists.sort(key=lambda x: x.score.total, reverse=True)
     top_artists = scored_artists[: filters.artist_count]
