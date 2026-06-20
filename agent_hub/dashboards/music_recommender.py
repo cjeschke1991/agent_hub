@@ -43,6 +43,7 @@ from agent_hub.agents.music_recommender.spotify import (
     spotify_configured,
     spotify_web_api_available,
 )
+from agent_hub.agents.music_recommender.genre_categories import classify_genres
 from agent_hub.agents.music_recommender.music_scores import (
     artist_score_key,
     load_song_score,
@@ -150,6 +151,10 @@ def _render_song_row(
         st.markdown(f"**{result.title}** — {result.artist} ({year})")
         if result.album:
             st.caption(result.album)
+        _result_genres = getattr(result, "genres", None) or []
+        if _result_genres:
+            _render_genres_caption(_result_genres)
+            _render_categories_caption(_result_genres)
     with cols[2]:
         if st.button(
             "Like",
@@ -204,8 +209,11 @@ def _render_artist_row(
             st.image(result.image_url, width=60)
     with cols[1]:
         st.markdown(f"**{result.name}**")
-        genres = ", ".join(result.genres[:3]) if result.genres else "—"
-        st.caption(genres)
+        if result.genres:
+            _render_genres_caption(result.genres)
+            _render_categories_caption(result.genres)
+        else:
+            st.caption("—")
     with cols[2]:
         if st.button(
             "Like",
@@ -443,6 +451,13 @@ def _render_letter_scroll_spy(scope_id: str) -> None:
 
 def _render_genres_caption(genres: list[str]) -> None:
     st.caption(f"Genres: {_format_genres(genres)}")
+
+
+def _render_categories_caption(genres: list[str]) -> None:
+    """Derive and display genre categories from a raw genre list."""
+    cats = classify_genres(genres)
+    if cats:
+        st.caption(f"Categories: {', '.join(cats)}")
 
 
 def _score_display_color(score: int) -> str:
@@ -962,6 +977,7 @@ def _render_taste_song_list(
                     if song_score is not None:
                         _render_score_badge(song_score)
                 _render_genres_caption(song.genres)
+                _render_categories_caption(song.genres)
                 _render_music_score_widget(
                     song.spotify_id,
                     "song",
@@ -1041,6 +1057,7 @@ def _render_taste_artist_list(
                     if artist_score is not None:
                         _render_score_badge(artist_score)
                 _render_genres_caption(artist.genres)
+                _render_categories_caption(artist.genres)
                 _render_music_score_widget(
                     score_id,
                     "artist",
@@ -1451,13 +1468,13 @@ def _render_recommendations() -> None:
                     unsafe_allow_html=True,
                 )
                 st.info(item.reason)
-                _render_genres_caption(
-                    resolve_track_genres(
-                        item.track,
-                        genre_cache=genre_cache,
-                        liked_artists=liked_artists_for_genres,
-                    )
+                track_genres = resolve_track_genres(
+                    item.track,
+                    genre_cache=genre_cache,
+                    liked_artists=liked_artists_for_genres,
                 )
+                _render_genres_caption(track_genres)
+                _render_categories_caption(track_genres)
                 af = item.track.audio_features_display()
                 if af:
                     st.markdown("  ".join(f"**{k}:** {v}" for k, v in af.items()))
@@ -1522,15 +1539,15 @@ def _render_recommendations() -> None:
                     unsafe_allow_html=True,
                 )
                 st.info(item.reason)
-                _render_genres_caption(
-                    resolve_display_genres(
-                        item.artist.spotify_id,
-                        item.artist.name,
-                        existing_genres=item.artist.genres,
-                        genre_cache=genre_cache,
-                        liked_artists=liked_artists_for_genres,
-                    )
+                artist_genres = resolve_display_genres(
+                    item.artist.spotify_id,
+                    item.artist.name,
+                    existing_genres=item.artist.genres,
+                    genre_cache=genre_cache,
+                    liked_artists=liked_artists_for_genres,
                 )
+                _render_genres_caption(artist_genres)
+                _render_categories_caption(artist_genres)
                 if item.artist.followers:
                     st.markdown(f"**Followers:** {item.artist.followers:,}")
                 breakdown = " · ".join(

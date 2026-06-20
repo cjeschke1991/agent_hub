@@ -11,6 +11,7 @@ from agent_hub.agents.music_recommender.pandora import (
     track_details_from_pandora,
 )
 from agent_hub.agents.music_recommender.explain import artist_reason, song_reason
+from agent_hub.agents.music_recommender.genre_categories import augment_with_categories
 from agent_hub.agents.music_recommender.music_scores import (
     load_all_artist_scores,
     load_all_song_scores,
@@ -1376,15 +1377,15 @@ def _build_liked_sets(
     song_scores = song_scores or {}
     liked_genres: set[str] = set()
     for s in liked_songs:
-        liked_genres.update(g.lower() for g in s.genres)
+        liked_genres.update(g.lower() for g in augment_with_categories(s.genres))
     for a in liked_artists:
-        liked_genres.update(g.lower() for g in a.genres)
+        liked_genres.update(g.lower() for g in augment_with_categories(a.genres))
 
     disliked_genres: set[str] = set()
     for s in disliked_songs:
-        disliked_genres.update(g.lower() for g in s.genres)
+        disliked_genres.update(g.lower() for g in augment_with_categories(s.genres))
     for a in disliked_artists:
-        disliked_genres.update(g.lower() for g in a.genres)
+        disliked_genres.update(g.lower() for g in augment_with_categories(a.genres))
 
     liked_energy: list[float] = []
     liked_valence: list[float] = []
@@ -1943,7 +1944,7 @@ def recommend(
             ):
                 return None
         scr = song_score(
-            candidate_genres=details.genres,
+            candidate_genres=augment_with_categories(details.genres),
             candidate_energy=details.energy,
             candidate_valence=details.valence,
             candidate_danceability=details.danceability,
@@ -2223,7 +2224,7 @@ def recommend(
         related_ids = artist_related_map.get(candidate_id, [])
         related_liked_count = len(set(related_ids) & liked_artist_ids)
         scr = artist_score(
-            candidate_genres=details.genres,
+            candidate_genres=augment_with_categories(details.genres),
             candidate_spotify_id=details.spotify_id,
             candidate_popularity=details.popularity,
             candidate_related_ids=related_ids,
