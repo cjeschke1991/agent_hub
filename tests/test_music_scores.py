@@ -4,12 +4,15 @@ from __future__ import annotations
 import pytest
 
 from agent_hub.agents.music_recommender.music_scores import (
+    artist_score_key,
     load_all_artist_scores,
     load_all_song_scores,
     load_artist_score,
     load_song_score,
+    resolve_candidate_multiplier,
     save_artist_score,
     save_song_score,
+    taste_profile_weight,
     user_score_multiplier,
 )
 from agent_hub.core.config import HubConfig
@@ -118,3 +121,32 @@ def test_song_metadata_persisted(cfg, tmp_path):
     assert entry["genres"] == ["rock"]
     assert entry["ai_score"] == 82.5
     assert entry["score"] == 7
+
+
+def test_artist_score_key_prefers_spotify():
+    assert artist_score_key("spotify123", pandora_id="pandora456") == "spotify123"
+    assert artist_score_key(None, pandora_id="pandora456") == "pandora:pandora456"
+    assert artist_score_key(None) == ""
+
+
+def test_taste_profile_weight():
+    assert taste_profile_weight(None) == 1.0
+    assert taste_profile_weight(0) == 0.5
+    assert taste_profile_weight(10) == 1.5
+    assert taste_profile_weight(5) == 1.0
+
+
+def test_resolve_candidate_multiplier_song_first():
+    song_scores = {"track1": 9}
+    artist_scores = {"artist1": 2}
+    assert resolve_candidate_multiplier("track1", "artist1", song_scores, artist_scores) == 1.15
+
+
+def test_resolve_candidate_multiplier_artist_fallback():
+    song_scores: dict[str, int] = {}
+    artist_scores = {"artist1": 2}
+    assert resolve_candidate_multiplier("track1", "artist1", song_scores, artist_scores) == 0.75
+
+
+def test_resolve_candidate_multiplier_neutral():
+    assert resolve_candidate_multiplier("track1", "artist1", {}, {}) == 1.0

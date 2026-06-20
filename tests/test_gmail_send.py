@@ -32,7 +32,7 @@ def test_send_morning_email_allows_recipient_override(tmp_path):
         data_dir=tmp_path,
         gmail=GmailConfig(
             credentials_path=str(tmp_path / "creds.json"),
-            morning_email=MorningEmailConfig(to="wife@example.com"),
+            morning_email=MorningEmailConfig(enabled=True, to="wife@example.com"),
         ),
     )
     (tmp_path / "creds.json").write_text("{}", encoding="utf-8")
@@ -49,3 +49,18 @@ def test_send_morning_email_allows_recipient_override(tmp_path):
     send_call = service.users.return_value.messages.return_value.send.call_args
     raw = send_call.kwargs["body"]["raw"]
     assert raw
+
+
+def test_send_morning_email_raises_when_disabled(tmp_path):
+    config = HubConfig(
+        data_dir=tmp_path,
+        gmail=GmailConfig(
+            credentials_path=str(tmp_path / "creds.json"),
+            morning_email=MorningEmailConfig(enabled=False, to="wife@example.com"),
+        ),
+    )
+    try:
+        send_morning_email(config)
+        assert False, "expected ValueError"
+    except ValueError as exc:
+        assert "disabled" in str(exc).lower()

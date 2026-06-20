@@ -101,7 +101,8 @@ class MusicRecommenderConfig:
 
 @dataclass
 class MorningEmailConfig:
-    to: str = "njeschke19@gmail.com"
+    enabled: bool = False
+    to: str = ""
     subject: str = "Good morning!"
     body: str = "Good morning to my AMAZING baby! :)"
 
@@ -210,7 +211,8 @@ def load_config(config_path: Path | None = None) -> HubConfig:
             max_emails=int(gmail_raw.get("max_emails", 50)),
             token_path=str(gmail_raw.get("token_path", "") or "").strip(),
             morning_email=MorningEmailConfig(
-                to=str(morning_raw.get("to", "njeschke19@gmail.com") or "njeschke19@gmail.com"),
+                enabled=bool(morning_raw.get("enabled", False)),
+                to=str(morning_raw.get("to", "") or ""),
                 subject=str(morning_raw.get("subject", "Good morning!") or "Good morning!"),
                 body=str(
                     morning_raw.get("body", "Good morning to my AMAZING baby! :)")

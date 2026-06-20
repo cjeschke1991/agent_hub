@@ -44,6 +44,7 @@ from agent_hub.agents.music_recommender.spotify import (
     spotify_web_api_available,
 )
 from agent_hub.agents.music_recommender.music_scores import (
+    artist_score_key,
     load_song_score,
     load_artist_score,
     save_song_score,
@@ -180,6 +181,14 @@ def _render_song_row(
             type="primary" if result.spotify_id in wishlist_ids else "secondary",
         ):
             _add_song_wishlist(result.spotify_id, result.title)
+    _render_music_score_widget(
+        result.spotify_id,
+        "song",
+        key_prefix=f"{key_prefix}_score",
+        title=result.title,
+        artist=result.artist,
+        genres=getattr(result, "genres", None) or [],
+    )
 
 
 def _render_artist_row(
@@ -228,6 +237,13 @@ def _render_artist_row(
             type="primary" if result.spotify_id in wishlist_ids else "secondary",
         ):
             _add_artist_wishlist(result.spotify_id, result.name)
+    _render_music_score_widget(
+        result.spotify_id,
+        "artist",
+        key_prefix=f"{key_prefix}_score",
+        name=result.name,
+        genres=result.genres,
+    )
 
 
 def _render_add_music() -> None:
@@ -429,10 +445,60 @@ def _render_genres_caption(genres: list[str]) -> None:
     st.caption(f"Genres: {_format_genres(genres)}")
 
 
+def _score_display_color(score: int) -> str:
+    """Red (0) → yellow (5) → green (10) gradient."""
+    score = max(0, min(10, int(score)))
+    if score <= 5:
+        t = score / 5.0
+        r = round(139 + (255 - 139) * t)
+        g = round(0 + (200 - 0) * t)
+        b = 0
+    else:
+        t = (score - 5) / 5.0
+        r = round(255 + (0 - 255) * t)
+        g = round(200 + (100 - 200) * t)
+        b = 0
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _render_score_badge(score: int) -> None:
+    color = _score_display_color(score)
+    st.markdown(
+        f'<div class="music-score-badge" style="color:{color};">{score}'
+        f'<span class="music-score-badge-denom">/10</span></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_taste_score_badge_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .music-score-badge {
+            text-align: right;
+            font-size: 2.25rem;
+            font-weight: 700;
+            line-height: 1;
+            margin-top: 0.15rem;
+            white-space: nowrap;
+        }
+        .music-score-badge-denom {
+            font-size: 1.1rem;
+            font-weight: 600;
+            opacity: 0.85;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _render_music_score_widget(
     spotify_id: str,
     item_type: str,  # "song" | "artist"
     *,
+    key_prefix: str = "music",
+    label_hint: str = "Rate 0-10",
     title: str = "",
     artist: str = "",
     name: str = "",
@@ -440,10 +506,11 @@ def _render_music_score_widget(
     ai_score: float | None = None,
 ) -> None:
     """0-10 selectbox with auto-save and red flash confirmation."""
-    saved_key = f"music_score_saved_{item_type}_{spotify_id}"
-    select_key = f"music_score_select_{item_type}_{spotify_id}"
+    if not spotify_id:
+        return
+    saved_key = f"{key_prefix}_score_saved_{item_type}_{spotify_id}"
+    select_key = f"{key_prefix}_score_select_{item_type}_{spotify_id}"
 
-    # Determine current saved score.
     current = (
         load_song_score(spotify_id) if item_type == "song" else load_artist_score(spotify_id)
     )
@@ -461,13 +528,14 @@ def _render_music_score_widget(
         )
     with label_col:
         if st.session_state.get(saved_key):
+            display_score = current if current is not None else int(chosen)
             st.markdown(
-                f'<span style="color:#dc3545;font-weight:600;">✓ {current}/10 saved</span>',
+                f'<span style="color:#dc3545;font-weight:600;">✓ {display_score}/10 saved</span>',
                 unsafe_allow_html=True,
             )
             st.session_state[saved_key] = False
         else:
-            st.caption("Rate this recommendation")
+            st.caption(label_hint)
 
     if chosen != "—":
         new_score = int(chosen)
@@ -859,6 +927,7 @@ def _render_taste_song_list(
         return
     if stacked_artist:
         _render_taste_song_stacked_css()
+    _render_taste_score_badge_css()
     if show_letter_index:
         _render_letter_index_css()
     scope_id = f"song-{sentiment}"
@@ -877,16 +946,30 @@ def _render_taste_song_list(
                     st.image(song.image_url, width=60)
             with cols[1]:
                 year = song.year or "—"
-                if stacked_artist:
-                    st.markdown(
-                        f"**{html.escape(song.title)}**<br>"
-                        f'<span class="music-taste-song-artist">'
-                        f"{html.escape(song.artist)} ({year})</span>",
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.markdown(f"**{song.title}** — {song.artist} ({year})")
+                title_col, score_col = st.columns([5, 1])
+                with title_col:
+                    if stacked_artist:
+                        st.markdown(
+                            f"**{html.escape(song.title)}**<br>"
+                            f'<span class="music-taste-song-artist">'
+                            f"{html.escape(song.artist)} ({year})</span>",
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown(f"**{song.title}** — {song.artist} ({year})")
+                with score_col:
+                    song_score = load_song_score(song.spotify_id)
+                    if song_score is not None:
+                        _render_score_badge(song_score)
                 _render_genres_caption(song.genres)
+                _render_music_score_widget(
+                    song.spotify_id,
+                    "song",
+                    key_prefix=f"taste_{sentiment}_song",
+                    title=song.title,
+                    artist=song.artist,
+                    genres=song.genres,
+                )
             with cols[2]:
                 _render_taste_remove_button(
                     button_key=f"music_remove_song_{sentiment}_{song.spotify_id}",
@@ -915,6 +998,7 @@ def _render_taste_artist_list(
         return
     if show_letter_index:
         _render_letter_index_css()
+    _render_taste_score_badge_css()
     scope_id = f"artist-{sentiment}"
     artist_groups = (
         _group_by_letter(artists, lambda artist: artist.name)
@@ -930,26 +1014,40 @@ def _render_taste_artist_list(
                 if artist.image_url:
                     st.image(artist.image_url, width=60)
             with cols[1]:
-                if sentiment == "like":
-                    with st.expander(artist.name, expanded=False):
-                        top_tracks = list_artist_top_tracks(artist.pandora_id, config=config)
-                        if not top_tracks:
-                            st.caption("No top tracks stored yet.")
-                            if artist.spotify_id and st.button(
-                                "Fetch top tracks",
-                                key=f"music_fetch_top_tracks_{artist.pandora_id}",
-                            ):
-                                refresh_artist_top_tracks(artist.pandora_id, config=config)
-                                st.rerun()
-                        else:
-                            for track in top_tracks:
-                                year = track.year or "—"
-                                st.markdown(f"**{track.rank}. {track.title}** ({year})")
-                                if track.album:
-                                    st.caption(track.album)
-                else:
-                    st.markdown(f"**{artist.name}**")
+                score_id = artist_score_key(artist.spotify_id, pandora_id=artist.pandora_id)
+                artist_score = load_artist_score(score_id) if score_id else None
+                name_col, score_col = st.columns([5, 1])
+                with name_col:
+                    if sentiment == "like":
+                        with st.expander(artist.name, expanded=False):
+                            top_tracks = list_artist_top_tracks(artist.pandora_id, config=config)
+                            if not top_tracks:
+                                st.caption("No top tracks stored yet.")
+                                if artist.spotify_id and st.button(
+                                    "Fetch top tracks",
+                                    key=f"music_fetch_top_tracks_{artist.pandora_id}",
+                                ):
+                                    refresh_artist_top_tracks(artist.pandora_id, config=config)
+                                    st.rerun()
+                            else:
+                                for track in top_tracks:
+                                    year = track.year or "—"
+                                    st.markdown(f"**{track.rank}. {track.title}** ({year})")
+                                    if track.album:
+                                        st.caption(track.album)
+                    else:
+                        st.markdown(f"**{artist.name}**")
+                with score_col:
+                    if artist_score is not None:
+                        _render_score_badge(artist_score)
                 _render_genres_caption(artist.genres)
+                _render_music_score_widget(
+                    score_id,
+                    "artist",
+                    key_prefix=f"taste_{sentiment}_artist",
+                    name=artist.name,
+                    genres=artist.genres,
+                )
             with cols[2]:
                 _render_taste_remove_button(
                     button_key=f"music_remove_artist_{sentiment}_{artist.pandora_id}",
@@ -1070,6 +1168,14 @@ def _render_wishlist(config) -> None:
                     af["BPM"] = f"{song.tempo:.0f}"
                 if af:
                     st.caption(" · ".join(f"{k}: {v}" for k, v in af.items()))
+                _render_music_score_widget(
+                    song.spotify_id,
+                    "song",
+                    key_prefix="wishlist_song",
+                    title=song.title,
+                    artist=song.artist,
+                    genres=song.genres,
+                )
             with cols[2]:
                 if st.button("Remove", key=f"music_wl_rm_song_{song.spotify_id}"):
                     remove_song_from_wishlist(song.spotify_id)
@@ -1091,6 +1197,13 @@ def _render_wishlist(config) -> None:
                     st.caption(", ".join(artist.genres[:3]))
                 if artist.followers:
                     st.caption(f"{artist.followers:,} followers")
+                _render_music_score_widget(
+                    artist.spotify_id,
+                    "artist",
+                    key_prefix="wishlist_artist",
+                    name=artist.name,
+                    genres=artist.genres,
+                )
             with cols[2]:
                 if st.button("Remove", key=f"music_wl_rm_artist_{artist.spotify_id}"):
                     remove_artist_from_wishlist(artist.spotify_id)
@@ -1387,6 +1500,8 @@ def _render_recommendations() -> None:
                 _render_music_score_widget(
                     item.track.spotify_id,
                     "song",
+                    key_prefix="rec_song",
+                    label_hint="Rate this recommendation",
                     title=item.track.title,
                     artist=item.track.artist,
                     genres=item.track.genres,
@@ -1457,6 +1572,8 @@ def _render_recommendations() -> None:
                 _render_music_score_widget(
                     item.artist.spotify_id,
                     "artist",
+                    key_prefix="rec_artist",
+                    label_hint="Rate this recommendation",
                     name=item.artist.name,
                     genres=item.artist.genres,
                     ai_score=item.score.total,

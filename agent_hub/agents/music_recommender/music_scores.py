@@ -1,9 +1,8 @@
-"""User-assigned 0-10 ratings for recommended songs and artists.
+"""User-assigned 0-10 ratings for songs and artists.
 
 Scores are stored alongside rich context (title, artist, genres, AI score) in
-a JSON file.  A multiplier derived from the score is applied to the
-recommendation algorithm's total so that highly-rated items surface again and
-low-rated ones are deprioritised.
+a JSON file.  Ratings influence recommendations via post-score multipliers on
+candidates and weighted taste-profile signals for liked library items.
 """
 from __future__ import annotations
 
@@ -116,6 +115,15 @@ def load_all_artist_scores(config: HubConfig | None = None) -> dict[str, int]:
 # Algorithm integration
 # ---------------------------------------------------------------------------
 
+def artist_score_key(spotify_id: str | None, *, pandora_id: str | None = None) -> str:
+    """Stable storage key for an artist (Spotify ID preferred)."""
+    if spotify_id:
+        return spotify_id
+    if pandora_id:
+        return f"pandora:{pandora_id}"
+    return ""
+
+
 def user_score_multiplier(score: int) -> float:
     """Convert a 0-10 user rating into a score.total multiplier.
 
@@ -128,3 +136,24 @@ def user_score_multiplier(score: int) -> float:
     if score >= 5:
         return 1.0
     return 0.75
+
+
+def taste_profile_weight(score: int | None) -> float:
+    """Weight liked-item signals in taste profile (0.5 at score 0 .. 1.5 at 10)."""
+    if score is None:
+        return 1.0
+    return 0.5 + score / 10.0
+
+
+def resolve_candidate_multiplier(
+    track_id: str | None,
+    artist_id: str | None,
+    song_scores: dict[str, int],
+    artist_scores: dict[str, int],
+) -> float:
+    """Multiplier for a recommendation candidate from direct or artist ratings."""
+    if track_id and track_id in song_scores:
+        return user_score_multiplier(song_scores[track_id])
+    if artist_id and artist_id in artist_scores:
+        return user_score_multiplier(artist_scores[artist_id])
+    return 1.0

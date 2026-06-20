@@ -202,6 +202,8 @@ def send_morning_email(config: HubConfig | None = None, *, to: str | None = None
     """Send the configured daily morning email. Returns the Gmail message id."""
     cfg = config or load_config()
     morning = cfg.gmail.morning_email
+    if to is None and not morning.enabled:
+        raise ValueError("Morning email is disabled in config.yaml (gmail.morning_email.enabled).")
     recipient = (to or morning.to).strip()
     if not recipient:
         raise ValueError("Morning email recipient is not configured.")

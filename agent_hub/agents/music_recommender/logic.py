@@ -14,7 +14,8 @@ from agent_hub.agents.music_recommender.explain import artist_reason, song_reaso
 from agent_hub.agents.music_recommender.music_scores import (
     load_all_artist_scores,
     load_all_song_scores,
-    user_score_multiplier,
+    resolve_candidate_multiplier,
+    taste_profile_weight,
 )
 from agent_hub.agents.music_recommender.scoring import (
     ArtistScoreBreakdown,
@@ -1369,7 +1370,10 @@ def _build_liked_sets(
     disliked_songs: list[TasteSong],
     liked_artists: list[TasteArtist],
     disliked_artists: list[TasteArtist],
+    *,
+    song_scores: dict[str, int] | None = None,
 ) -> tuple[set[str], set[str], list[float], list[float], list[float], set[str], set[str], list[int]]:
+    song_scores = song_scores or {}
     liked_genres: set[str] = set()
     for s in liked_songs:
         liked_genres.update(g.lower() for g in s.genres)
@@ -1382,9 +1386,18 @@ def _build_liked_sets(
     for a in disliked_artists:
         disliked_genres.update(g.lower() for g in a.genres)
 
-    liked_energy = [s.energy for s in liked_songs if s.energy is not None]
-    liked_valence = [s.valence for s in liked_songs if s.valence is not None]
-    liked_danceability = [s.danceability for s in liked_songs if s.danceability is not None]
+    liked_energy: list[float] = []
+    liked_valence: list[float] = []
+    liked_danceability: list[float] = []
+    for s in liked_songs:
+        weight = taste_profile_weight(song_scores.get(s.spotify_id))
+        repeats = max(1, round(weight * 2))
+        if s.energy is not None:
+            liked_energy.extend([s.energy] * repeats)
+        if s.valence is not None:
+            liked_valence.extend([s.valence] * repeats)
+        if s.danceability is not None:
+            liked_danceability.extend([s.danceability] * repeats)
 
     liked_artist_ids = {s.artist_id for s in liked_songs if s.artist_id}
     liked_artist_ids.update(
@@ -1723,6 +1736,9 @@ def recommend(
             "Add at least one liked song or artist to get recommendations."
         )
 
+    _user_song_scores = load_all_song_scores(config)
+    _user_artist_scores = load_all_artist_scores(config)
+
     rec_cache_id = cache_key(
         filters.year_min,
         filters.year_max,
@@ -1740,6 +1756,8 @@ def recommend(
         sorted(a.spotify_id for a in liked_artists),
         sorted(s.spotify_id for s in disliked_songs),
         sorted(a.spotify_id for a in disliked_artists),
+        sorted(_user_song_scores.items()),
+        sorted(_user_artist_scores.items()),
     )
     cached_recs = cache_get_pickle(
         config.data_dir,
@@ -1755,7 +1773,10 @@ def recommend(
         liked_energy, liked_valence, liked_danceability,
         liked_artist_ids, disliked_artist_ids,
         liked_years,
-    ) = _build_liked_sets(liked_songs, disliked_songs, liked_artists, disliked_artists)
+    ) = _build_liked_sets(
+        liked_songs, disliked_songs, liked_artists, disliked_artists,
+        song_scores=_user_song_scores,
+    )
 
     taste_spotify_ids = {s.spotify_id for s in liked_songs + disliked_songs}
 
@@ -1889,8 +1910,6 @@ def recommend(
         config=config,
     )
 
-    _user_song_scores = load_all_song_scores(config)
-
     def _score_track(
         track_id: str,
         zone_name: str,
@@ -1950,10 +1969,11 @@ def recommend(
             source_rank=details.source_rank,
             zone_weights=zone_weights_obj,
         )
-        # Apply user rating multiplier if this track has been rated.
-        user_rating = _user_song_scores.get(track_id)
-        if user_rating is not None:
-            mult = user_score_multiplier(user_rating)
+        # Apply user rating multiplier (direct song rating or artist rating).
+        mult = resolve_candidate_multiplier(
+            track_id, details.artist_id, _user_song_scores, _user_artist_scores
+        )
+        if mult != 1.0:
             scr = SongScoreBreakdown(
                 genre=scr.genre,
                 audio_features=scr.audio_features,
@@ -2239,11 +2259,11 @@ def recommend(
             )
         )
 
-    _user_artist_scores = load_all_artist_scores(config)
     for rec in scored_artists:
-        rating = _user_artist_scores.get(rec.artist.spotify_id)
-        if rating is not None:
-            mult = user_score_multiplier(rating)
+        mult = resolve_candidate_multiplier(
+            None, rec.artist.spotify_id, _user_song_scores, _user_artist_scores
+        )
+        if mult != 1.0:
             rec.score = ArtistScoreBreakdown(
                 genre=rec.score.genre,
                 related_artists=rec.score.related_artists,

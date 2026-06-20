@@ -27,6 +27,12 @@ def send_morning_email_cmd(
         raise typer.Exit(code=1)
 
     morning = config.gmail.morning_email
+    if to is None and not morning.enabled:
+        typer.echo(
+            "Morning email is disabled (gmail.morning_email.enabled: false in config.yaml).",
+            err=True,
+        )
+        raise typer.Exit(code=1)
     recipient = (to or morning.to).strip()
     try:
         message_id = send_morning_email(config, to=to)
@@ -45,7 +51,8 @@ def status_cmd() -> None:
     morning = config.gmail.morning_email
     creds_ok = gmail_credentials_configured(config)
     typer.echo(f"Gmail credentials: {'configured' if creds_ok else 'missing'}")
-    typer.echo(f"Morning email to: {morning.to}")
+    typer.echo(f"Morning email enabled: {morning.enabled}")
+    typer.echo(f"Morning email to: {morning.to or '(not set)'}")
     typer.echo(f"Subject: {morning.subject}")
     typer.echo(f"Body: {morning.body}")
 
