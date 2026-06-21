@@ -1,6 +1,6 @@
 import streamlit as st
 
-from agent_hub.dashboards import daily_briefing, gmail_assistant, movie_recommender, music_recommender, pinball_tracker, placeholder
+from agent_hub.dashboards import daily_briefing, gmail_assistant, health_fitness, movie_recommender, music_recommender, pinball_tracker, placeholder, tourettes_research
 
 st.set_page_config(page_title="AI Agent Hub", page_icon="🤖", layout="wide")
 
@@ -15,6 +15,7 @@ TABS = [
     ("File Search", "file_search"),
     ("Finance Summaries", "finance_summaries"),
     ("Health & Fitness", "health_fitness"),
+    ("Tourettes Research", "tourettes_research"),
 ]
 
 ENABLED_TABS = {
@@ -23,6 +24,8 @@ ENABLED_TABS = {
     "pinball_tracker": pinball_tracker.render,
     "movie_recommender": movie_recommender.render,
     "music_recommender": music_recommender.render,
+    "health_fitness": health_fitness.render,
+    "tourettes_research": tourettes_research.render,
 }
 
 PLACEHOLDER_COPY = {
@@ -32,6 +35,7 @@ PLACEHOLDER_COPY = {
     "file_search": "Fast local file search with agent-assisted ranking.",
     "finance_summaries": "Daily and monthly finance rollups from your data sources.",
     "health_fitness": "Track workouts, nutrition, sleep, and health trends in one place.",
+    "tourettes_research": "Research hub for Tourette syndrome — literature, symptom tracking, and insights. Coming soon.",
 }
 
 st.title("AI Agent Hub")
